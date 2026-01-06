@@ -43,8 +43,9 @@ DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_OBSTACLES = True
 DEFAULT_SHOW_CAMERA = True
 DEFAULT_CAMERA_UPDATE_FREQ = 5  # Update camera every N control steps
-DEFAULT_SHOW_LIDAR = True
-DEFAULT_LIDAR_UPDATE_FREQ = 5  # Update LiDAR every N control steps
+DEFAULT_SHOW_LIDAR = False  # 2D LiDAR disabled
+DEFAULT_SHOW_LIDAR3D = True  # 3D LiDAR enabled
+DEFAULT_LIDAR_UPDATE_FREQ = 10  # Update LiDAR every N control steps (reduced for performance)
 DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 48
 DEFAULT_DURATION_SEC = 20
@@ -68,6 +69,7 @@ def run(
         show_camera=DEFAULT_SHOW_CAMERA,
         camera_update_freq=DEFAULT_CAMERA_UPDATE_FREQ,
         show_lidar=DEFAULT_SHOW_LIDAR,
+        show_lidar3d=DEFAULT_SHOW_LIDAR3D,
         lidar_update_freq=DEFAULT_LIDAR_UPDATE_FREQ
         ):
     #### Initialize the simulation #############################
@@ -344,7 +346,7 @@ def run(
                         record=record_video,
                         obstacles=obstacles,
                         user_debug_gui=user_debug_gui,
-                        vision_attributes=show_camera  # Enable camera if show_camera is True
+                        vision_attributes=show_camera or show_lidar3d  # Enable vision if camera or 3D LiDAR is enabled
                         )
 
     #### Obtain the PyBullet Client ID from the environment ####
@@ -416,7 +418,7 @@ def run(
     CAMERA_WINDOW_WIDTH = LIDAR_WINDOW_WIDTH  # Exact match with LiDAR
     CAMERA_WINDOW_HEIGHT = 500  # Square window
     
-    #### Initialize LiDAR visualization #######################
+    #### Initialize 2D LiDAR visualization (disabled) ###########
     lidar_fig = None
     lidar_ax = None
     if show_lidar:
@@ -436,6 +438,95 @@ def run(
                 mgr.window.wm_geometry("+1200+50")
         except:
             pass  # Fallback if positioning fails
+    
+    #### Initialize 3D LiDAR visualization ######################
+    lidar3d_vis = None
+    lidar3d_view_initialized = False  # Track if camera view has been set
+    if show_lidar3d:
+        try:
+            import open3d as o3d
+            print("[INFO] Initializing 3D LiDAR visualization...")
+            # Create Open3D visualizer
+            lidar3d_vis = o3d.visualization.Visualizer()
+            lidar3d_vis.create_window(window_name="3D LiDAR Point Cloud", 
+                                      width=LIDAR_WINDOW_WIDTH, 
+                                      height=LIDAR_WINDOW_WIDTH,
+                                      visible=True)
+            print("[INFO] 3D LiDAR window created")
+            
+            # Create initial empty point cloud (will be updated)
+            pcd = o3d.geometry.PointCloud()
+            # Add a few initial points so window renders properly
+            initial_points = np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]])
+            pcd.points = o3d.utility.Vector3dVector(initial_points)
+            lidar3d_vis.add_geometry(pcd)
+            
+            # Add coordinate axes for reference (X=red, Y=green, Z=blue)
+            coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+            lidar3d_vis.add_geometry(coord_frame)
+            
+            # Add a grid plane at z=0 for reference (ground plane)
+            grid_size = 5.0
+            grid_resolution = 0.5
+            grid_points = []
+            grid_lines_list = []
+            line_idx = 0
+            # Create grid lines
+            for i in range(int(-grid_size/grid_resolution), int(grid_size/grid_resolution) + 1):
+                x = i * grid_resolution
+                # Lines parallel to Y axis
+                grid_points.append([x, -grid_size, 0])
+                grid_points.append([x, grid_size, 0])
+                grid_lines_list.append([line_idx, line_idx + 1])
+                line_idx += 2
+                # Lines parallel to X axis
+                grid_points.append([-grid_size, x, 0])
+                grid_points.append([grid_size, x, 0])
+                grid_lines_list.append([line_idx, line_idx + 1])
+                line_idx += 2
+            if len(grid_points) > 0:
+                grid_lines = o3d.geometry.LineSet()
+                grid_lines.points = o3d.utility.Vector3dVector(np.array(grid_points))
+                grid_lines.lines = o3d.utility.Vector2iVector(np.array(grid_lines_list))
+                # Gray color for grid
+                grid_colors = [[0.3, 0.3, 0.3]] * len(grid_lines_list)
+                grid_lines.colors = o3d.utility.Vector3dVector(np.array(grid_colors))
+                lidar3d_vis.add_geometry(grid_lines)
+            
+            # Set initial view - will be updated to look at drone in first frame
+            # This is just a placeholder, will be set properly when we have drone position
+            ctr = lidar3d_vis.get_view_control()
+            ctr.set_front([0.5, -0.7, -0.5])  # Look from above-right-front
+            ctr.set_lookat([0, 0, 1])  # Look at typical drone height
+            ctr.set_up([0, 0, 1])  # Up is world Z
+            ctr.set_zoom(0.7)  # Zoom out a bit
+            
+            # Render initial frame to ensure window is visible
+            lidar3d_vis.poll_events()
+            lidar3d_vis.update_renderer()
+            print("[INFO] 3D LiDAR visualization ready")
+            
+            # Position window in top-right corner (same as 2D LiDAR)
+            try:
+                import subprocess
+                import time
+                time.sleep(0.3)  # Wait for window to be fully created
+                # Position LiDAR window ABOVE camera window (y=50 = top)
+                subprocess.run(['wmctrl', '-r', '3D LiDAR Point Cloud', '-e', '0,1200,50,500,500'], 
+                             capture_output=True, timeout=1)
+            except:
+                pass  # Fallback if positioning fails
+                
+        except ImportError:
+            print("[WARNING] open3d not installed. Install with: pip install open3d")
+            show_lidar3d = False
+            lidar3d_vis = None
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize 3D LiDAR visualization: {e}")
+            import traceback
+            traceback.print_exc()
+            show_lidar3d = False
+            lidar3d_vis = None
 
     #### Initialize the controllers ############################
     if drone in [DroneModel.CF2X, DroneModel.CF2P]:
@@ -447,9 +538,10 @@ def run(
         cv2.namedWindow('Drone Camera Feed', cv2.WINDOW_NORMAL)
         # Make camera window exactly same width as LiDAR
         cv2.resizeWindow('Drone Camera Feed', int(CAMERA_WINDOW_WIDTH), int(CAMERA_WINDOW_HEIGHT))
-        # Position window in bottom-right corner (lower than before)
+        # Position window in bottom-right corner, directly below LiDAR window
+        # LiDAR is at y=50 with height 500, so camera starts at y=560 (with 10px gap)
         try:
-            cv2.moveWindow('Drone Camera Feed', 1200, 600)  # x=1200 (right), y=600 (lower, below LiDAR)
+            cv2.moveWindow('Drone Camera Feed', 1200, 560)  # x=1200 (right), y=560 (directly below LiDAR)
         except:
             pass  # Fallback if positioning fails
 
@@ -463,6 +555,13 @@ def run(
 
         #### Step the simulation ###################################
         obs, reward, terminated, truncated, info = env.step(action)
+        
+        #### Keep 3D LiDAR window responsive (poll events regularly) ####
+        if show_lidar3d and lidar3d_vis is not None:
+            try:
+                lidar3d_vis.poll_events()
+            except:
+                pass  # Window might be closed
 
         #### Capture and display camera feed #######################
         if show_camera and i % camera_update_freq == 0:
@@ -489,7 +588,7 @@ def run(
                 
                 # Ensure window stays in position (reposition if moved)
                 try:
-                    cv2.moveWindow('Drone Camera Feed', 1200, 600)
+                    cv2.moveWindow('Drone Camera Feed', 1200, 560)  # Directly below LiDAR
                 except:
                     pass
                 
@@ -498,7 +597,7 @@ def run(
                 if i == 0:  # Only print once
                     print(f"[WARNING] Camera feed not available: {e}")
 
-        #### Capture and visualize LiDAR scan #######################
+        #### Capture and visualize 2D LiDAR scan ####################
         if show_lidar and i % lidar_update_freq == 0:
             try:
                 # Get LiDAR scan from first drone
@@ -526,6 +625,114 @@ def run(
                 # LiDAR might not be available yet or error occurred
                 if i == 0:  # Only print once
                     print(f"[WARNING] LiDAR scan not available: {e}")
+
+        #### Capture and visualize 3D LiDAR scan ####################
+        if show_lidar3d and i % lidar_update_freq == 0 and lidar3d_vis is not None:
+            try:
+                import open3d as o3d
+                # Get 3D LiDAR scan from first drone
+                hit_points, ranges, ray_angles = env._getDroneLidarScan3D(0)
+                
+                # Filter out points at max range (no hit)
+                valid_mask = ranges < env.LIDAR3D_MAX_RANGE
+                valid_points = hit_points[valid_mask]
+                
+                # Debug output (only occasionally)
+                if i == 0 or (i % (lidar_update_freq * 20) == 0):
+                    print(f"[DEBUG] 3D LiDAR: Total rays={len(ranges)}, Valid points={len(valid_points)}, Drone pos={obs[0][:3]}")
+                
+                # ============================================================
+                # DRONE BODY FRAME VISUALIZATION
+                # ============================================================
+                # LiDAR points are ALREADY in body frame (returned by _getDroneLidarScan3D):
+                # - Drone is always at origin (0, 0, 0)
+                # - X axis = forward (red), Y axis = left (green), Z axis = up (blue)
+                # - Obstacles appear to move around the drone
+                # - Camera stays fixed in this frame, allowing pan/zoom
+                # ============================================================
+                
+                # Clear geometries (does not affect camera if we don't touch it)
+                lidar3d_vis.clear_geometries()
+                
+                # Coordinate frame at origin (drone position in body frame)
+                # No rotation needed - it's already aligned with body frame axes
+                coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+                lidar3d_vis.add_geometry(coord_frame, reset_bounding_box=False)
+                
+                # Grid in drone's XY plane (body frame), centered at origin
+                grid_size = 5.0
+                grid_resolution = 0.5
+                grid_points = []
+                grid_lines_list = []
+                line_idx = 0
+                for j in range(int(-grid_size/grid_resolution), int(grid_size/grid_resolution) + 1):
+                    x = j * grid_resolution
+                    # Lines parallel to Y axis
+                    grid_points.append([x, -grid_size, 0])
+                    grid_points.append([x, grid_size, 0])
+                    grid_lines_list.append([line_idx, line_idx + 1])
+                    line_idx += 2
+                    # Lines parallel to X axis
+                    grid_points.append([-grid_size, x, 0])
+                    grid_points.append([grid_size, x, 0])
+                    grid_lines_list.append([line_idx, line_idx + 1])
+                    line_idx += 2
+                
+                if len(grid_points) > 0:
+                    grid_lines = o3d.geometry.LineSet()
+                    grid_lines.points = o3d.utility.Vector3dVector(np.array(grid_points))
+                    grid_lines.lines = o3d.utility.Vector2iVector(np.array(grid_lines_list))
+                    grid_colors = [[0.3, 0.3, 0.3]] * len(grid_lines_list)
+                    grid_lines.colors = o3d.utility.Vector3dVector(np.array(grid_colors))
+                    lidar3d_vis.add_geometry(grid_lines, reset_bounding_box=False)
+                
+                # LiDAR points are already in BODY FRAME from _getDroneLidarScan3D
+                # No transformation needed!
+                pcd = o3d.geometry.PointCloud()
+                if len(valid_points) > 0:
+                    # Points are already in body frame
+                    pcd.points = o3d.utility.Vector3dVector(valid_points)
+                    
+                    # Color points by distance from drone (origin in body frame)
+                    distances = np.linalg.norm(valid_points, axis=1)
+                    dist_min = distances.min()
+                    dist_max = distances.max()
+                    dist_range = dist_max - dist_min if dist_max != dist_min else 1.0
+                    dist_normalized = (distances - dist_min) / dist_range
+                    colors = np.zeros((len(valid_points), 3))
+                    colors[:, 0] = np.clip(2 * dist_normalized, 0, 1)  # Red: increases with distance
+                    colors[:, 1] = np.clip(2 - 2 * dist_normalized, 0, 1)  # Green: decreases with distance
+                    colors[:, 2] = np.clip(1 - 2 * np.abs(dist_normalized - 0.5), 0, 1)  # Blue: peaks at middle
+                    pcd.colors = o3d.utility.Vector3dVector(colors)
+                else:
+                    # Empty point cloud - add a dummy point at origin
+                    pcd.points = o3d.utility.Vector3dVector(np.array([[0, 0, 0]]))
+                    pcd.colors = o3d.utility.Vector3dVector(np.array([[0.5, 0.5, 0.5]]))
+                lidar3d_vis.add_geometry(pcd, reset_bounding_box=False)
+                
+                # Set camera view ONCE in body frame, then user has full control
+                # Since everything is in body frame, camera stays fixed relative to axes
+                if not lidar3d_view_initialized:
+                    ctr = lidar3d_vis.get_view_control()
+                    # Look at origin (drone position in body frame)
+                    ctr.set_lookat([0, 0, 0])
+                    # View from above and behind-right: looking at +X (forward) direction
+                    ctr.set_front([0.5, -0.7, -0.5])  # From above-right-front
+                    ctr.set_up([0, 0, 1])  # Up is +Z (drone's up)
+                    ctr.set_zoom(0.7)
+                    lidar3d_view_initialized = True
+                # Camera is NEVER touched again - user can pan/zoom/rotate freely
+                # Everything stays in body frame, so view is stable
+                
+                lidar3d_vis.poll_events()
+                lidar3d_vis.update_renderer()
+                
+            except Exception as e:
+                # 3D LiDAR might not be available yet or error occurred
+                if i == 0:  # Only print once
+                    print(f"[WARNING] 3D LiDAR scan not available: {e}")
+                    import traceback
+                    traceback.print_exc()
 
         #### Compute control for the current way point #############
         for j in range(num_drones):
@@ -600,6 +807,8 @@ def run(
         cv2.destroyAllWindows()
     if show_lidar:
         plt.close('all')  # Close all matplotlib figures
+    if show_lidar3d and lidar3d_vis is not None:
+        lidar3d_vis.destroy_window()  # Close Open3D window
 
     #### Save the simulation results ###########################
     logger.save()
@@ -627,7 +836,8 @@ if __name__ == "__main__":
     parser.add_argument('--colab',              default=DEFAULT_COLAB, type=bool,           help='Whether example is being run by a notebook (default: "False")', metavar='')
     parser.add_argument('--show_camera',        default=DEFAULT_SHOW_CAMERA, type=str2bool,      help='Whether to show live camera feed in OpenCV window (default: True)', metavar='')
     parser.add_argument('--camera_update_freq', default=DEFAULT_CAMERA_UPDATE_FREQ, type=int,  help='Update camera every N control steps (default: 5)', metavar='')
-    parser.add_argument('--show_lidar',         default=DEFAULT_SHOW_LIDAR, type=str2bool,      help='Whether to show live LiDAR scan visualization (default: True)', metavar='')
+    parser.add_argument('--show_lidar',         default=DEFAULT_SHOW_LIDAR, type=str2bool,      help='Whether to show live 2D LiDAR scan visualization (default: False)', metavar='')
+    parser.add_argument('--show_lidar3d',      default=DEFAULT_SHOW_LIDAR3D, type=str2bool,      help='Whether to show live 3D LiDAR point cloud visualization (default: True)', metavar='')
     parser.add_argument('--lidar_update_freq', default=DEFAULT_LIDAR_UPDATE_FREQ, type=int,  help='Update LiDAR every N control steps (default: 5)', metavar='')
     ARGS = parser.parse_args()
     run(**vars(ARGS))

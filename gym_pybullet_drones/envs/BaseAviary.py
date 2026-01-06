@@ -142,11 +142,20 @@ class BaseAviary(gym.Env):
                 print("[ERROR] in BaseAviary.__init__(), PyBullet and control frequencies incompatible with the desired video capture frame rate ({:f}Hz)".format(self.IMG_FRAME_PER_SEC))
                 exit()
             #### LiDAR configuration constants ####################
+            # 2D LiDAR constants
             self.LIDAR_MAX_RANGE = 10.0  # Maximum detection range in meters
             self.LIDAR_NUM_RAYS = 360  # Number of rays per scan (angular resolution: 360/num_rays degrees)
             self.LIDAR_FOV = 360.0  # Field of view in degrees (360 = full circle for 2D)
             self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
             self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
+            # 3D LiDAR constants
+            self.LIDAR3D_MAX_RANGE = 10.0  # Maximum detection range in meters
+            self.LIDAR3D_HORIZONTAL_RES = 5.0  # Horizontal angular resolution in degrees (reduced for performance)
+            self.LIDAR3D_VERTICAL_RES = 5.0  # Vertical angular resolution in degrees (reduced for performance)
+            self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
+            self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere downward: 0 to -90)
+            self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
+            self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
             if self.RECORD:
                 for i in range(self.NUM_DRONES):
                     os.makedirs(os.path.dirname(self.ONBOARD_IMG_PATH+"/drone_"+str(i)+"/"), exist_ok=True)
@@ -716,6 +725,143 @@ class BaseAviary(gym.Env):
         ray_angles = np.column_stack([world_angles, np.zeros(num_rays)])  # (azimuth, elevation=0 for 2D)
         
         return ranges, hit_points, ray_angles
+
+    ################################################################################
+
+    def _getDroneLidarScan3D(self,
+                             nth_drone,
+                             max_range=None,
+                             horizontal_res=None,
+                             vertical_res=None,
+                             horizontal_fov=None,
+                             vertical_fov=None
+                             ):
+        """Returns a 3D LiDAR scan from the n-th drone's perspective.
+        
+        Performs hemispherical (downward) scanning pattern.
+
+        Parameters
+        ----------
+        nth_drone : int
+            The ordinal number/position of the desired drone in list self.DRONE_IDS.
+        max_range : float, optional
+            Maximum detection range in meters. If None, uses self.LIDAR3D_MAX_RANGE.
+        horizontal_res : float, optional
+            Horizontal angular resolution in degrees. If None, uses self.LIDAR3D_HORIZONTAL_RES.
+        vertical_res : float, optional
+            Vertical angular resolution in degrees. If None, uses self.LIDAR3D_VERTICAL_RES.
+        horizontal_fov : float, optional
+            Horizontal field of view in degrees. If None, uses self.LIDAR3D_HORIZONTAL_FOV.
+        vertical_fov : float, optional
+            Vertical field of view in degrees. If None, uses self.LIDAR3D_VERTICAL_FOV.
+
+        Returns
+        -------
+        ndarray
+            (num_points, 3)-shaped array of floats containing the 3D hit points for each ray.
+            Points are in BODY FRAME coordinates (drone at origin, X=forward, Y=left, Z=up).
+            Points at max_range indicate no hit.
+        ndarray
+            (num_points,)-shaped array of floats containing the range measurements for each ray.
+            Values are in meters, with max_range indicating no hit.
+        ndarray
+            (num_points, 2)-shaped array of floats containing the (azimuth, elevation) angles
+            in radians for each ray direction (in body frame).
+
+        """
+        #### Use default constants if not specified ################
+        if max_range is None:
+            max_range = self.LIDAR3D_MAX_RANGE
+        if horizontal_res is None:
+            horizontal_res = self.LIDAR3D_HORIZONTAL_RES
+        if vertical_res is None:
+            vertical_res = self.LIDAR3D_VERTICAL_RES
+        if horizontal_fov is None:
+            horizontal_fov = self.LIDAR3D_HORIZONTAL_FOV
+        if vertical_fov is None:
+            vertical_fov = self.LIDAR3D_VERTICAL_FOV
+        
+        #### Generate ray directions for hemispherical scan ########
+        # Horizontal: full circle (0 to 360 degrees)
+        # Vertical: downward hemisphere (0 to -vertical_fov degrees)
+        num_horizontal = int(horizontal_fov / horizontal_res)
+        num_vertical = int(vertical_fov / vertical_res)
+        total_rays = num_horizontal * num_vertical
+        
+        # Generate angles
+        horizontal_angles = np.linspace(0, np.deg2rad(horizontal_fov), num_horizontal, endpoint=False)
+        # Vertical angles: from 0 (horizontal/forward) to -vertical_fov (downward)
+        # Include endpoint to get full hemisphere including straight down
+        vertical_angles = np.linspace(0, -np.deg2rad(vertical_fov), num_vertical, endpoint=True)
+        
+        #### Get drone position and orientation #####################
+        drone_pos = self.pos[nth_drone, :]
+        drone_quat = self.quat[nth_drone, :]
+        rot_mat = np.array(p.getMatrixFromQuaternion(drone_quat)).reshape(3, 3)
+        
+        #### Generate ray directions in drone's local frame ##########
+        # For 3D hemispherical LiDAR: rays in downward hemisphere
+        ray_dirs_local = []
+        ray_angles_list = []
+        
+        for v_angle in vertical_angles:
+            for h_angle in horizontal_angles:
+                # Convert spherical to Cartesian coordinates
+                # In drone's local frame: X=forward, Y=left, Z=up
+                # For downward hemisphere: start from forward (X), rotate around Z (horizontal), then tilt down
+                x = np.cos(v_angle) * np.cos(h_angle)  # Forward component
+                y = np.cos(v_angle) * np.sin(h_angle)  # Left component
+                z = np.sin(v_angle)  # Downward component (negative for downward)
+                ray_dirs_local.append([x, y, z])
+                ray_angles_list.append([h_angle, v_angle])
+        
+        ray_dirs_local = np.array(ray_dirs_local)
+        ray_angles = np.array(ray_angles_list)
+        
+        #### Transform ray directions to world frame ################
+        ray_dirs_world = (rot_mat @ ray_dirs_local.T).T
+        
+        #### Compute ray start and end positions ####################
+        ray_from = np.tile(drone_pos, (total_rays, 1))
+        ray_to = ray_from + ray_dirs_world * max_range
+        
+        #### Perform batch raycast (split into chunks if needed) ####
+        # PyBullet has a maximum batch size limit (use conservative 10000 to avoid issues)
+        MAX_BATCH_SIZE = 10000
+        ranges = np.zeros(total_rays)
+        
+        # Process rays in batches to avoid exceeding PyBullet's batch size limit
+        for batch_start in range(0, total_rays, MAX_BATCH_SIZE):
+            batch_end = min(batch_start + MAX_BATCH_SIZE, total_rays)
+            
+            # Extract batch
+            batch_from = ray_from[batch_start:batch_end]
+            batch_to = ray_to[batch_start:batch_end]
+            
+            # Perform batch raycast for this chunk
+            ray_hits = p.rayTestBatch(
+                rayFromPositions=batch_from.tolist(),
+                rayToPositions=batch_to.tolist(),
+                parentObjectUniqueId=self.DRONE_IDS[nth_drone],  # Ignore the drone itself
+                physicsClientId=self.CLIENT
+            )
+            
+            # Extract ranges for this batch
+            for i, hit in enumerate(ray_hits):
+                global_idx = batch_start + i
+                if hit[0] != -1:  # Hit detected
+                    ranges[global_idx] = hit[2] * max_range  # hitFraction * max_range
+                else:  # No hit
+                    ranges[global_idx] = max_range
+        
+        #### Compute hit points directly in body frame ####
+        # Since rays start at origin (drone position) in body frame,
+        # and ray_dirs_local are the ray directions in body frame,
+        # the hit points in body frame are simply: range * ray_direction
+        # This avoids any world-to-body transformation issues!
+        hit_points_body = ray_dirs_local * ranges.reshape(-1, 1)
+        
+        return hit_points_body, ranges, ray_angles
 
     ################################################################################
 
