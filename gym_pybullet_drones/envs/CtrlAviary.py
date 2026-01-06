@@ -22,6 +22,7 @@ class CtrlAviary(BaseAviary):
                  record=False,
                  obstacles=False,
                  user_debug_gui=True,
+                 vision_attributes=False,
                  output_folder='results'
                  ):
         """Initialization of an aviary environment for control applications.
@@ -66,6 +67,7 @@ class CtrlAviary(BaseAviary):
                          record=record,
                          obstacles=obstacles,
                          user_debug_gui=user_debug_gui,
+                         vision_attributes=vision_attributes,
                          output_folder=output_folder
                          )
 
