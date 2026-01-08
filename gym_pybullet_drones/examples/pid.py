@@ -46,9 +46,10 @@ DEFAULT_CAMERA_UPDATE_FREQ = 5  # Update camera every N control steps
 DEFAULT_SHOW_LIDAR = False  # 2D LiDAR disabled
 DEFAULT_SHOW_LIDAR3D = True  # 3D LiDAR enabled
 DEFAULT_LIDAR_UPDATE_FREQ = 10  # Update LiDAR every N control steps (reduced for performance)
+
 DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 48
-DEFAULT_DURATION_SEC = 20
+DEFAULT_DURATION_SEC = 40
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_COLAB = False
 
@@ -346,7 +347,9 @@ def run(
                         record=record_video,
                         obstacles=obstacles,
                         user_debug_gui=user_debug_gui,
-                        vision_attributes=show_camera or show_lidar3d  # Enable vision if camera or 3D LiDAR is enabled
+                        vision_attributes=show_camera or show_lidar3d,  # Enable vision if camera or 3D LiDAR is enabled
+                        ceiling_height=3.0,  # Ceiling at 3m height
+                        wall_x_offset=3.0    # Wall 3m in front of drone
                         )
 
     #### Obtain the PyBullet Client ID from the environment ####
@@ -442,10 +445,12 @@ def run(
     #### Initialize 3D LiDAR visualization ######################
     lidar3d_vis = None
     lidar3d_view_initialized = False  # Track if camera view has been set
+    lidar3d_point_history = []  # Store recent point clouds for temporal smoothing
+    LIDAR3D_HISTORY_SIZE = 3  # Number of frames to average (reduces jitter)
     if show_lidar3d:
         try:
             import open3d as o3d
-            print("[INFO] Initializing 3D LiDAR visualization...")
+            print(f"[INFO] Initializing 3D LiDAR visualization...")
             # Create Open3D visualizer
             lidar3d_vis = o3d.visualization.Visualizer()
             lidar3d_vis.create_window(window_name="3D LiDAR Point Cloud", 
@@ -633,13 +638,22 @@ def run(
                 # Get 3D LiDAR scan from first drone
                 hit_points, ranges, ray_angles = env._getDroneLidarScan3D(0)
                 
-                # Filter out points at max range (no hit)
-                valid_mask = ranges < env.LIDAR3D_MAX_RANGE
+                # Filter out points at max range (no hit) with small tolerance
+                valid_mask = ranges < (env.LIDAR3D_MAX_RANGE - 0.01)
                 valid_points = hit_points[valid_mask]
+                valid_ranges = ranges[valid_mask]
                 
-                # Debug output (only occasionally)
-                if i == 0 or (i % (lidar_update_freq * 20) == 0):
-                    print(f"[DEBUG] 3D LiDAR: Total rays={len(ranges)}, Valid points={len(valid_points)}, Drone pos={obs[0][:3]}")
+                # Temporal smoothing: accumulate points from recent frames to reduce jitter
+                lidar3d_point_history.append(valid_points.copy())
+                if len(lidar3d_point_history) > LIDAR3D_HISTORY_SIZE:
+                    lidar3d_point_history.pop(0)
+                
+                # Combine points from all frames in history
+                if len(lidar3d_point_history) > 0:
+                    smoothed_points = np.vstack(lidar3d_point_history)
+                else:
+                    smoothed_points = valid_points
+                
                 
                 # ============================================================
                 # DRONE BODY FRAME VISUALIZATION
@@ -660,8 +674,9 @@ def run(
                 lidar3d_vis.add_geometry(coord_frame, reset_bounding_box=False)
                 
                 # Grid in drone's XY plane (body frame), centered at origin
-                grid_size = 5.0
-                grid_resolution = 0.5
+                # Make grid larger to accommodate full LiDAR range
+                grid_size = env.LIDAR3D_MAX_RANGE  # Use LiDAR max range for grid
+                grid_resolution = 1.0  # 1m resolution for larger grid
                 grid_points = []
                 grid_lines_list = []
                 line_idx = 0
@@ -687,19 +702,19 @@ def run(
                     lidar3d_vis.add_geometry(grid_lines, reset_bounding_box=False)
                 
                 # LiDAR points are already in BODY FRAME from _getDroneLidarScan3D
-                # No transformation needed!
+                # Use smoothed_points (accumulated from recent frames) for stable visualization
                 pcd = o3d.geometry.PointCloud()
-                if len(valid_points) > 0:
+                if len(smoothed_points) > 0:
                     # Points are already in body frame
-                    pcd.points = o3d.utility.Vector3dVector(valid_points)
+                    pcd.points = o3d.utility.Vector3dVector(smoothed_points)
                     
                     # Color points by distance from drone (origin in body frame)
-                    distances = np.linalg.norm(valid_points, axis=1)
+                    distances = np.linalg.norm(smoothed_points, axis=1)
                     dist_min = distances.min()
                     dist_max = distances.max()
                     dist_range = dist_max - dist_min if dist_max != dist_min else 1.0
                     dist_normalized = (distances - dist_min) / dist_range
-                    colors = np.zeros((len(valid_points), 3))
+                    colors = np.zeros((len(smoothed_points), 3))
                     colors[:, 0] = np.clip(2 * dist_normalized, 0, 1)  # Red: increases with distance
                     colors[:, 1] = np.clip(2 - 2 * dist_normalized, 0, 1)  # Green: decreases with distance
                     colors[:, 2] = np.clip(1 - 2 * np.abs(dist_normalized - 0.5), 0, 1)  # Blue: peaks at middle
@@ -708,7 +723,11 @@ def run(
                     # Empty point cloud - add a dummy point at origin
                     pcd.points = o3d.utility.Vector3dVector(np.array([[0, 0, 0]]))
                     pcd.colors = o3d.utility.Vector3dVector(np.array([[0.5, 0.5, 0.5]]))
-                lidar3d_vis.add_geometry(pcd, reset_bounding_box=False)
+                
+                # On first frame, reset bounding box to include full LiDAR range
+                # After that, keep bounding box stable so user can pan/zoom freely
+                reset_bbox = not lidar3d_view_initialized
+                lidar3d_vis.add_geometry(pcd, reset_bounding_box=reset_bbox)
                 
                 # Set camera view ONCE in body frame, then user has full control
                 # Since everything is in body frame, camera stays fixed relative to axes
@@ -719,7 +738,7 @@ def run(
                     # View from above and behind-right: looking at +X (forward) direction
                     ctr.set_front([0.5, -0.7, -0.5])  # From above-right-front
                     ctr.set_up([0, 0, 1])  # Up is +Z (drone's up)
-                    ctr.set_zoom(0.7)
+                    ctr.set_zoom(0.4)  # Zoom out more to see full LiDAR range
                     lidar3d_view_initialized = True
                 # Camera is NEVER touched again - user can pan/zoom/rotate freely
                 # Everything stays in body frame, so view is stable

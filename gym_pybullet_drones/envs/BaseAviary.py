@@ -36,7 +36,9 @@ class BaseAviary(gym.Env):
                  obstacles=False,
                  user_debug_gui=True,
                  vision_attributes=False,
-                 output_folder='results'
+                 output_folder='results',
+                 ceiling_height: float=3.0,
+                 wall_x_offset: float=3
                  ):
         """Initialization of a generic aviary environment.
 
@@ -68,6 +70,10 @@ class BaseAviary(gym.Env):
             Whether to draw the drones' axes and the GUI RPMs sliders.
         vision_attributes : bool, optional
             Whether to allocate the attributes needed by vision-based aviary subclasses.
+        ceiling_height : float, optional
+            Height of the ceiling in meters. If None or <= 0, no ceiling is added. Default is 2.0 meters.
+        wall_x_offset : float, optional
+            Distance along x-axis from the first drone's starting position to place a wall. If None or <= 0, no wall is added. Default is 1.5 meters.
 
         """
         #### Constants #############################################
@@ -93,6 +99,10 @@ class BaseAviary(gym.Env):
         self.USER_DEBUG = user_debug_gui
         self.URDF = self.DRONE_MODEL.value + ".urdf"
         self.OUTPUT_FOLDER = output_folder
+        self.CEILING_HEIGHT = ceiling_height if ceiling_height and ceiling_height > 0 else None
+        self.CEILING_ID = None  # Will be set if ceiling is added
+        self.WALL_X_OFFSET = wall_x_offset if wall_x_offset and wall_x_offset > 0 else None
+        self.WALL_ID = None  # Will be set if wall is added
         #### Load the drone properties from the .urdf file #########
         self.M, \
         self.L, \
@@ -131,6 +141,21 @@ class BaseAviary(gym.Env):
             self.ONBOARD_IMG_PATH = os.path.join(self.OUTPUT_FOLDER, "recording_" + datetime.now().strftime("%m.%d.%Y_%H.%M.%S"))
             os.makedirs(os.path.dirname(self.ONBOARD_IMG_PATH), exist_ok=True)
         self.VISION_ATTR = vision_attributes
+        #### LiDAR configuration constants (always defined) ####
+        # 2D LiDAR constants
+        self.LIDAR_MAX_RANGE = 10.0  # Maximum detection range in meters
+        self.LIDAR_NUM_RAYS = 360  # Number of rays per scan (angular resolution: 360/num_rays degrees)
+        self.LIDAR_FOV = 360.0  # Field of view in degrees (360 = full circle for 2D)
+        self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
+        self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
+        # 3D LiDAR constants
+        self.LIDAR3D_MAX_RANGE = 5.0  # Maximum detection range in meters
+        self.LIDAR3D_HORIZONTAL_RES = 3.0  # Horizontal angular resolution in degrees
+        self.LIDAR3D_VERTICAL_RES = 3.0  # Vertical angular resolution in degrees
+        self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
+        self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere upward: 0 to +90)
+        self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
+        self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
         if self.VISION_ATTR:
             self.IMG_RES = np.array([64, 48])
             self.IMG_FRAME_PER_SEC = 24
@@ -141,21 +166,6 @@ class BaseAviary(gym.Env):
             if self.IMG_CAPTURE_FREQ%self.PYB_STEPS_PER_CTRL != 0:
                 print("[ERROR] in BaseAviary.__init__(), PyBullet and control frequencies incompatible with the desired video capture frame rate ({:f}Hz)".format(self.IMG_FRAME_PER_SEC))
                 exit()
-            #### LiDAR configuration constants ####################
-            # 2D LiDAR constants
-            self.LIDAR_MAX_RANGE = 10.0  # Maximum detection range in meters
-            self.LIDAR_NUM_RAYS = 360  # Number of rays per scan (angular resolution: 360/num_rays degrees)
-            self.LIDAR_FOV = 360.0  # Field of view in degrees (360 = full circle for 2D)
-            self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
-            self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
-            # 3D LiDAR constants
-            self.LIDAR3D_MAX_RANGE = 10.0  # Maximum detection range in meters
-            self.LIDAR3D_HORIZONTAL_RES = 5.0  # Horizontal angular resolution in degrees (reduced for performance)
-            self.LIDAR3D_VERTICAL_RES = 5.0  # Vertical angular resolution in degrees (reduced for performance)
-            self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
-            self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere downward: 0 to -90)
-            self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
-            self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
             if self.RECORD:
                 for i in range(self.NUM_DRONES):
                     os.makedirs(os.path.dirname(self.ONBOARD_IMG_PATH+"/drone_"+str(i)+"/"), exist_ok=True)
@@ -518,6 +528,10 @@ class BaseAviary(gym.Env):
             # p.setCollisionFilterPair(bodyUniqueIdA=self.PLANE_ID, bodyUniqueIdB=self.DRONE_IDS[i], linkIndexA=-1, linkIndexB=-1, enableCollision=0, physicsClientId=self.CLIENT)
         if self.OBSTACLES:
             self._addObstacles()
+        if self.CEILING_HEIGHT is not None:
+            self._addCeiling()
+        if self.WALL_X_OFFSET is not None:
+            self._addWall()
     
     ################################################################################
 
@@ -738,7 +752,7 @@ class BaseAviary(gym.Env):
                              ):
         """Returns a 3D LiDAR scan from the n-th drone's perspective.
         
-        Performs hemispherical (downward) scanning pattern.
+        Performs hemispherical (upward) scanning pattern.
 
         Parameters
         ----------
@@ -783,83 +797,121 @@ class BaseAviary(gym.Env):
         
         #### Generate ray directions for hemispherical scan ########
         # Horizontal: full circle (0 to 360 degrees)
-        # Vertical: downward hemisphere (0 to -vertical_fov degrees)
+        # Vertical: upward hemisphere (0 to +vertical_fov degrees)
         num_horizontal = int(horizontal_fov / horizontal_res)
-        num_vertical = int(vertical_fov / vertical_res)
+        num_vertical = int(vertical_fov / vertical_res) + 1  # +1 to include endpoint (e.g., 90 degrees)
         total_rays = num_horizontal * num_vertical
         
-        # Generate angles
+        # Generate angles using meshgrid for vectorized computation
         horizontal_angles = np.linspace(0, np.deg2rad(horizontal_fov), num_horizontal, endpoint=False)
-        # Vertical angles: from 0 (horizontal/forward) to -vertical_fov (downward)
-        # Include endpoint to get full hemisphere including straight down
-        vertical_angles = np.linspace(0, -np.deg2rad(vertical_fov), num_vertical, endpoint=True)
+        # Vertical angles: from 0 (horizontal/forward) to +vertical_fov (upward)
+        vertical_angles = np.linspace(0, np.deg2rad(vertical_fov), num_vertical, endpoint=True)
+        
+        # Create meshgrid and flatten for all ray combinations
+        h_grid, v_grid = np.meshgrid(horizontal_angles, vertical_angles, indexing='xy')
+        h_flat = h_grid.flatten()
+        v_flat = v_grid.flatten()
         
         #### Get drone position and orientation #####################
-        drone_pos = self.pos[nth_drone, :]
+        drone_pos = np.array(self.pos[nth_drone, :])
         drone_quat = self.quat[nth_drone, :]
         rot_mat = np.array(p.getMatrixFromQuaternion(drone_quat)).reshape(3, 3)
         
-        #### Generate ray directions in drone's local frame ##########
-        # For 3D hemispherical LiDAR: rays in downward hemisphere
-        ray_dirs_local = []
-        ray_angles_list = []
+        #### Calculate LiDAR origin offset to avoid drone body interference ####
+        # Position LiDAR on top of the drone body to avoid self-collision
+        # Offset = half collision height + z offset + small margin (0.05m)
+        lidar_z_offset = self.COLLISION_H / 2 + self.COLLISION_Z_OFFSET + 0.05
+        # LiDAR origin in drone's body frame (at top of drone, centered)
+        lidar_origin_body = np.array([0, 0, lidar_z_offset])
+        # Transform to world frame
+        lidar_origin_world = drone_pos + rot_mat @ lidar_origin_body
         
-        for v_angle in vertical_angles:
-            for h_angle in horizontal_angles:
-                # Convert spherical to Cartesian coordinates
-                # In drone's local frame: X=forward, Y=left, Z=up
-                # For downward hemisphere: start from forward (X), rotate around Z (horizontal), then tilt down
-                x = np.cos(v_angle) * np.cos(h_angle)  # Forward component
-                y = np.cos(v_angle) * np.sin(h_angle)  # Left component
-                z = np.sin(v_angle)  # Downward component (negative for downward)
-                ray_dirs_local.append([x, y, z])
-                ray_angles_list.append([h_angle, v_angle])
+        #### Generate ray directions in drone's local frame (vectorized) ####
+        # Convert spherical to Cartesian coordinates
+        # In drone's local frame: X=forward, Y=left, Z=up
+        cos_v = np.cos(v_flat)
+        sin_v = np.sin(v_flat)
+        cos_h = np.cos(h_flat)
+        sin_h = np.sin(h_flat)
         
-        ray_dirs_local = np.array(ray_dirs_local)
-        ray_angles = np.array(ray_angles_list)
+        ray_dirs_local = np.column_stack([
+            cos_v * cos_h,  # X: Forward component
+            cos_v * sin_h,  # Y: Left component
+            sin_v           # Z: Upward component (positive for upward)
+        ])
+        ray_angles = np.column_stack([h_flat, v_flat])
+        
+        #### Apply LiDAR mount pitch rotation (10° forward) ####
+        # Rotate all ray directions by +10° around Y axis (pitch forward)
+        # This simulates the LiDAR being mounted at a 10° forward angle
+        lidar_pitch_deg = 10.0  # Forward pitch angle in degrees
+        lidar_pitch_rad = np.deg2rad(lidar_pitch_deg)
+        cos_pitch = np.cos(lidar_pitch_rad)  # Positive for forward pitch
+        sin_pitch = np.sin(lidar_pitch_rad)
+        
+        # Rotation matrix around Y axis (pitch forward)
+        # Standard right-hand rule: positive rotation rotates Z toward +X (forward tilt)
+        # [cos(θ),  0,  sin(θ)]
+        # [0,       1,  0     ]
+        # [-sin(θ), 0,  cos(θ)]
+        pitch_rotation = np.array([
+            [cos_pitch, 0, sin_pitch],
+            [0, 1, 0],
+            [-sin_pitch, 0, cos_pitch]
+        ])
+        
+        # Apply pitch rotation to ray directions in body frame
+        ray_dirs_local = (pitch_rotation @ ray_dirs_local.T).T
         
         #### Transform ray directions to world frame ################
         ray_dirs_world = (rot_mat @ ray_dirs_local.T).T
         
         #### Compute ray start and end positions ####################
-        ray_from = np.tile(drone_pos, (total_rays, 1))
+        # Get actual total rays from the array size
+        actual_total_rays = len(ray_dirs_local)
+        
+        # Rays start from the LiDAR origin (on top of drone), not from drone center
+        ray_from = np.tile(lidar_origin_world, (actual_total_rays, 1))
         ray_to = ray_from + ray_dirs_world * max_range
         
-        #### Perform batch raycast (split into chunks if needed) ####
-        # PyBullet has a maximum batch size limit (use conservative 10000 to avoid issues)
-        MAX_BATCH_SIZE = 10000
-        ranges = np.zeros(total_rays)
+        #### Perform batch raycast ####
+        # Update collision detection before raycasting
+        p.performCollisionDetection(physicsClientId=self.CLIENT)
         
-        # Process rays in batches to avoid exceeding PyBullet's batch size limit
-        for batch_start in range(0, total_rays, MAX_BATCH_SIZE):
-            batch_end = min(batch_start + MAX_BATCH_SIZE, total_rays)
-            
-            # Extract batch
-            batch_from = ray_from[batch_start:batch_end]
-            batch_to = ray_to[batch_start:batch_end]
-            
-            # Perform batch raycast for this chunk
-            ray_hits = p.rayTestBatch(
-                rayFromPositions=batch_from.tolist(),
-                rayToPositions=batch_to.tolist(),
-                parentObjectUniqueId=self.DRONE_IDS[nth_drone],  # Ignore the drone itself
-                physicsClientId=self.CLIENT
-            )
-            
-            # Extract ranges for this batch
-            for i, hit in enumerate(ray_hits):
-                global_idx = batch_start + i
-                if hit[0] != -1:  # Hit detected
-                    ranges[global_idx] = hit[2] * max_range  # hitFraction * max_range
-                else:  # No hit
-                    ranges[global_idx] = max_range
+        # Raycast returns closest hit per ray
+        ray_hits = p.rayTestBatch(
+            rayFromPositions=ray_from.tolist(),
+            rayToPositions=ray_to.tolist(),
+            parentObjectUniqueId=-1,  # Test all objects
+            physicsClientId=self.CLIENT
+        )
         
-        #### Compute hit points directly in body frame ####
-        # Since rays start at origin (drone position) in body frame,
-        # and ray_dirs_local are the ray directions in body frame,
-        # the hit points in body frame are simply: range * ray_direction
-        # This avoids any world-to-body transformation issues!
-        hit_points_body = ray_dirs_local * ranges.reshape(-1, 1)
+        #### Extract ranges and hit positions ####
+        # PyBullet's rayTestBatch returns the FIRST (closest) hit per ray
+        ranges = np.zeros(actual_total_rays)
+        hit_points_world = np.zeros((actual_total_rays, 3))
+        
+        for i, hit in enumerate(ray_hits):
+            if hit[0] != -1:  # Hit detected
+                # hit[0] = objectUniqueId, hit[1] = linkIndex
+                # hit[2] = hitFraction (0.0 = at ray start, 1.0 = at ray end)
+                # hit[3] = hitPosition (world frame coordinates)
+                # Filter self-hits (they would mask real hits)
+                if hit[0] == int(self.DRONE_IDS[nth_drone]):
+                    ranges[i] = max_range
+                    hit_points_world[i] = ray_to[i]
+                else:
+                    ranges[i] = hit[2] * max_range
+                    hit_points_world[i] = hit[3]
+            else:  # No hit
+                ranges[i] = max_range
+                hit_points_world[i] = ray_to[i]
+        
+        #### Transform hit points from world frame to body frame ####
+        # First, translate to body frame origin (subtract drone position)
+        hit_points_body_translated = hit_points_world - drone_pos
+        # Then rotate to body frame (inverse rotation = transpose for rotation matrices)
+        hit_points_body = (rot_mat.T @ hit_points_body_translated.T).T
         
         return hit_points_body, ranges, ray_angles
 
@@ -1226,6 +1278,120 @@ class BaseAviary(gym.Env):
                    p.getQuaternionFromEuler([0,0,0]),
                    physicsClientId=self.CLIENT
                    )
+    
+    ################################################################################
+    
+    def _addCeiling(self):
+        """Add a ceiling at the specified height using tiled collision shapes.
+
+        Uses 5m×5m tiles to avoid PyBullet's raycast issues with very large shapes.
+
+        """
+        ceiling_thickness = 0.3  # Thickness of ceiling tiles
+        tile_size = 5.0  # Each tile is 5m × 5m (optimal for PyBullet)
+        ceiling_coverage = 10.0  # Total coverage area (10m × 10m)
+        
+        # Calculate number of tiles needed (2×2 = 4 tiles for 10m×10m)
+        num_tiles = max(1, int(np.ceil(ceiling_coverage / tile_size)))
+        
+        tile_half_extents = [tile_size / 2, tile_size / 2, ceiling_thickness / 2]
+        
+        # Store all ceiling tile IDs
+        self.CEILING_TILE_IDS = []
+        
+        # Create tiles in a grid
+        for ix in range(num_tiles):
+            for iy in range(num_tiles):
+                x_pos = -ceiling_coverage / 2 + tile_size / 2 + ix * tile_size
+                y_pos = -ceiling_coverage / 2 + tile_size / 2 + iy * tile_size
+                z_pos = self.CEILING_HEIGHT + ceiling_thickness / 2
+                
+                tile_collision = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=tile_half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                tile_visual = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=tile_half_extents,
+                    rgbaColor=[0.8, 0.8, 0.8, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+                tile_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=tile_collision,
+                    baseVisualShapeIndex=tile_visual,
+                    basePosition=[x_pos, y_pos, z_pos],
+                    physicsClientId=self.CLIENT
+                )
+                self.CEILING_TILE_IDS.append(tile_id)
+        
+        # Use the first tile as the main CEILING_ID for compatibility
+        self.CEILING_ID = self.CEILING_TILE_IDS[0] if self.CEILING_TILE_IDS else None
+        
+        # Step simulation to ensure collision shapes are initialized
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+    
+    ################################################################################
+    
+    def _addWall(self):
+        """Add a vertical wall at the specified x-offset using tiled collision shapes.
+
+        Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
+
+        """
+        wall_x_position = self.INIT_XYZS[0, 0] + self.WALL_X_OFFSET
+        wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
+        
+        # Create wall from a few larger cubes (not one huge cube, not 30 tiny cubes)
+        # PyBullet has issues with very large collision shapes (>10m), so we tile larger chunks
+        # Optimal: Use cubes that are ~5m (works reliably in PyBullet's broad-phase)
+        cube_width = 5.0  # Each cube is 5m wide in Y
+        cube_height = wall_height  # Full height (avoids vertical seams)
+        wall_thickness = 0.5  # Wall thickness
+        wall_total_width = 10.0  # Total wall coverage in Y direction
+        
+        # Calculate number of cubes needed (just 2 cubes for 10m width)
+        num_cubes = max(1, int(np.ceil(wall_total_width / cube_width)))
+        
+        cube_half_extents = [wall_thickness / 2, cube_width / 2, cube_height / 2]
+        
+        # Store all wall cube IDs
+        self.WALL_CUBE_IDS = []
+        
+        # Create side-by-side cubes
+        for i in range(num_cubes):
+            # Position cubes side by side in Y direction
+            y_pos = -wall_total_width / 2 + cube_width / 2 + i * cube_width
+            z_pos = cube_height / 2  # Center vertically
+            
+            cube_collision = p.createCollisionShape(
+                p.GEOM_BOX,
+                halfExtents=cube_half_extents,
+                physicsClientId=self.CLIENT
+            )
+            cube_visual = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=cube_half_extents,
+                rgbaColor=[0.7, 0.7, 0.7, 1.0],
+                physicsClientId=self.CLIENT
+            )
+            cube_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=cube_collision,
+                baseVisualShapeIndex=cube_visual,
+                basePosition=[wall_x_position, y_pos, z_pos],
+                physicsClientId=self.CLIENT
+            )
+            self.WALL_CUBE_IDS.append(cube_id)
+        
+        # Use the first cube as the main WALL_ID for compatibility
+        self.WALL_ID = self.WALL_CUBE_IDS[0] if self.WALL_CUBE_IDS else None
+        
+        # Step simulation to ensure collision shapes are initialized
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
     
     ################################################################################
     

@@ -23,7 +23,9 @@ class CtrlAviary(BaseAviary):
                  obstacles=False,
                  user_debug_gui=True,
                  vision_attributes=False,
-                 output_folder='results'
+                 output_folder='results',
+                 ceiling_height: float=3.0,
+                 wall_x_offset: float=3.0
                  ):
         """Initialization of an aviary environment for control applications.
 
@@ -53,6 +55,10 @@ class CtrlAviary(BaseAviary):
             Whether to add obstacles to the simulation.
         user_debug_gui : bool, optional
             Whether to draw the drones' axes and the GUI RPMs sliders.
+        ceiling_height : float, optional
+            Height of the ceiling in meters. Default is 3.0 meters.
+        wall_x_offset : float, optional
+            Distance along x-axis from the first drone to place a wall. Default is 3.0 meters.
 
         """
         super().__init__(drone_model=drone_model,
@@ -68,7 +74,9 @@ class CtrlAviary(BaseAviary):
                          obstacles=obstacles,
                          user_debug_gui=user_debug_gui,
                          vision_attributes=vision_attributes,
-                         output_folder=output_folder
+                         output_folder=output_folder,
+                         ceiling_height=ceiling_height,
+                         wall_x_offset=wall_x_offset
                          )
 
     ################################################################################
