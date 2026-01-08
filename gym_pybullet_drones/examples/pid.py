@@ -446,7 +446,7 @@ def run(
     lidar3d_vis = None
     lidar3d_view_initialized = False  # Track if camera view has been set
     lidar3d_point_history = []  # Store recent point clouds for temporal smoothing
-    LIDAR3D_HISTORY_SIZE = 3  # Number of frames to average (reduces jitter)
+    LIDAR3D_HISTORY_SIZE = 1  # Number of frames to average (reduces jitter)
     if show_lidar3d:
         try:
             import open3d as o3d
@@ -716,28 +716,28 @@ def run(
                     dist_normalized = (distances - dist_min) / dist_range
                     
                     # Create smoother color transitions to avoid white points
-                    # Use non-linear mapping for better visibility
+                    # Use non-linear mapping for better visibility with very slow transitions
                     # Close: green/cyan, Middle: orange/red, Far: red/magenta
                     colors = np.zeros((len(smoothed_points), 3))
                     
-                    # Red: gradual increase with distance (slower transition)
-                    # Use smoothstep-like function for gradual transition
-                    colors[:, 0] = dist_normalized ** 0.7  # Red increases slowly at first, then faster
+                    # Red: very gradual increase with distance (much slower transition)
+                    # Use stronger power function for very gradual transition
+                    colors[:, 0] = dist_normalized ** 0.4  # Red increases very slowly, then accelerates
                     
-                    # Green: gradual decrease with distance (slower transition)
-                    # Keep green high for longer, then decrease
-                    colors[:, 1] = (1.0 - dist_normalized) ** 0.7  # Green decreases slowly
+                    # Green: very gradual decrease with distance (much slower transition)
+                    # Keep green high for much longer, then decrease slowly
+                    colors[:, 1] = (1.0 - dist_normalized) ** 0.4  # Green decreases very slowly
                     
-                    # Blue: peaks at middle distances, but with smoother falloff
-                    # Keep blue lower to avoid white/yellow points
+                    # Blue: peaks at middle distances, but keep it very low to avoid white
+                    # Much lower blue cap to ensure darker, more saturated colors
                     middle_factor = 1.0 - 2.0 * np.abs(dist_normalized - 0.5)
-                    colors[:, 2] = np.clip(middle_factor ** 1.5, 0, 0.6)  # Blue peaks at middle, capped at 0.6 to avoid white
+                    colors[:, 2] = np.clip(middle_factor ** 2.0, 0, 0.4)  # Blue peaks at middle, capped at 0.4 (very low) to avoid white
                     
-                    # Normalize to ensure colors are vibrant but not white
-                    # Scale so max component is ~0.9 to keep colors saturated
+                    # Normalize to ensure colors are very vibrant but never white
+                    # Scale so max component is ~0.95 to keep colors highly saturated
                     max_component = np.max(colors, axis=1, keepdims=True)
                     max_component = np.maximum(max_component, 0.01)  # Avoid division by zero
-                    colors = colors / max_component * 0.9  # Scale so max is 0.9, keeping colors vibrant
+                    colors = colors / max_component * 0.95  # Scale so max is 0.95, keeping colors very vibrant
                     
                     pcd.colors = o3d.utility.Vector3dVector(colors)
                 else:
