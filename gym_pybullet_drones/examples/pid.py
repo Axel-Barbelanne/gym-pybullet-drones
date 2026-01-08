@@ -714,10 +714,31 @@ def run(
                     dist_max = distances.max()
                     dist_range = dist_max - dist_min if dist_max != dist_min else 1.0
                     dist_normalized = (distances - dist_min) / dist_range
+                    
+                    # Create smoother color transitions to avoid white points
+                    # Use non-linear mapping for better visibility
+                    # Close: green/cyan, Middle: orange/red, Far: red/magenta
                     colors = np.zeros((len(smoothed_points), 3))
-                    colors[:, 0] = np.clip(2 * dist_normalized, 0, 1)  # Red: increases with distance
-                    colors[:, 1] = np.clip(2 - 2 * dist_normalized, 0, 1)  # Green: decreases with distance
-                    colors[:, 2] = np.clip(1 - 2 * np.abs(dist_normalized - 0.5), 0, 1)  # Blue: peaks at middle
+                    
+                    # Red: gradual increase with distance (slower transition)
+                    # Use smoothstep-like function for gradual transition
+                    colors[:, 0] = dist_normalized ** 0.7  # Red increases slowly at first, then faster
+                    
+                    # Green: gradual decrease with distance (slower transition)
+                    # Keep green high for longer, then decrease
+                    colors[:, 1] = (1.0 - dist_normalized) ** 0.7  # Green decreases slowly
+                    
+                    # Blue: peaks at middle distances, but with smoother falloff
+                    # Keep blue lower to avoid white/yellow points
+                    middle_factor = 1.0 - 2.0 * np.abs(dist_normalized - 0.5)
+                    colors[:, 2] = np.clip(middle_factor ** 1.5, 0, 0.6)  # Blue peaks at middle, capped at 0.6 to avoid white
+                    
+                    # Normalize to ensure colors are vibrant but not white
+                    # Scale so max component is ~0.9 to keep colors saturated
+                    max_component = np.max(colors, axis=1, keepdims=True)
+                    max_component = np.maximum(max_component, 0.01)  # Avoid division by zero
+                    colors = colors / max_component * 0.9  # Scale so max is 0.9, keeping colors vibrant
+                    
                     pcd.colors = o3d.utility.Vector3dVector(colors)
                 else:
                     # Empty point cloud - add a dummy point at origin
