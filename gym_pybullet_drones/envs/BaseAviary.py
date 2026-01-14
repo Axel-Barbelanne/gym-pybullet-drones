@@ -73,7 +73,7 @@ class BaseAviary(gym.Env):
         ceiling_height : float, optional
             Height of the ceiling in meters. If None or <= 0, no ceiling is added. Default is 2.0 meters.
         wall_x_offset : float, optional
-            Distance along x-axis from the first drone's starting position to place a wall. If None or <= 0, no wall is added. Default is 1.5 meters.
+            X position in world coordinates where the wall is placed. If None or <= 0, no wall is added. Default is 3.0 meters.
 
         """
         #### Constants #############################################
@@ -148,12 +148,15 @@ class BaseAviary(gym.Env):
         self.LIDAR_FOV = 360.0  # Field of view in degrees (360 = full circle for 2D)
         self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
         self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
-        # 3D LiDAR constants
+        # 3D LiDAR constants - Polar Range Image Representation
         self.LIDAR3D_MAX_RANGE = 5.0  # Maximum detection range in meters
-        self.LIDAR3D_HORIZONTAL_RES = 3.0  # Horizontal angular resolution in degrees
-        self.LIDAR3D_VERTICAL_RES = 3.0  # Vertical angular resolution in degrees
+        self.LIDAR3D_NUM_BEAMS = 16  # Vertical beams (elevation channels) for range image
+        self.LIDAR3D_NUM_BINS = 90   # Horizontal bins (azimuth channels) for range image
         self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
         self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere upward: 0 to +90)
+        # Computed resolutions based on fixed beam/bin configuration
+        self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / (self.LIDAR3D_NUM_BEAMS - 1)  # ~6° per beam
+        self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS  # 4° per bin
         self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
         self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
         if self.VISION_ATTR:
@@ -745,14 +748,19 @@ class BaseAviary(gym.Env):
     def _getDroneLidarScan3D(self,
                              nth_drone,
                              max_range=None,
-                             horizontal_res=None,
-                             vertical_res=None,
-                             horizontal_fov=None,
-                             vertical_fov=None
+                             return_point_cloud=False
                              ):
-        """Returns a 3D LiDAR scan from the n-th drone's perspective.
+        """Returns a 3D LiDAR scan as a polar range image.
         
-        Performs hemispherical (upward) scanning pattern.
+        Performs hemispherical (upward) scanning pattern using a fixed-size
+        polar range image representation (H x W x 2) where:
+        - H = NUM_BEAMS (vertical elevation channels)
+        - W = NUM_BINS (horizontal azimuth bins)
+        - Channel 0: normalized range [0, 1]
+        - Channel 1: hit mask {0, 1}
+        
+        This representation is designed for CNN-based learning and matches
+        realistic rotating multi-beam LiDAR behavior.
 
         Parameters
         ----------
@@ -760,57 +768,43 @@ class BaseAviary(gym.Env):
             The ordinal number/position of the desired drone in list self.DRONE_IDS.
         max_range : float, optional
             Maximum detection range in meters. If None, uses self.LIDAR3D_MAX_RANGE.
-        horizontal_res : float, optional
-            Horizontal angular resolution in degrees. If None, uses self.LIDAR3D_HORIZONTAL_RES.
-        vertical_res : float, optional
-            Vertical angular resolution in degrees. If None, uses self.LIDAR3D_VERTICAL_RES.
-        horizontal_fov : float, optional
-            Horizontal field of view in degrees. If None, uses self.LIDAR3D_HORIZONTAL_FOV.
-        vertical_fov : float, optional
-            Vertical field of view in degrees. If None, uses self.LIDAR3D_VERTICAL_FOV.
+        return_point_cloud : bool, optional
+            If True, also convert and return point cloud for visualization.
+            Default is False (only return range image for efficiency).
 
         Returns
         -------
-        ndarray
-            (num_points, 3)-shaped array of floats containing the 3D hit points for each ray.
-            Points are in BODY FRAME coordinates (drone at origin, X=forward, Y=left, Z=up).
-            Points at max_range indicate no hit.
-        ndarray
-            (num_points,)-shaped array of floats containing the range measurements for each ray.
-            Values are in meters, with max_range indicating no hit.
-        ndarray
-            (num_points, 2)-shaped array of floats containing the (azimuth, elevation) angles
-            in radians for each ray direction (in body frame).
+        range_image : ndarray, shape (H, W, 2), dtype=float32
+            Polar range image representation.
+            Channel 0: normalized range [0, 1] (distance / max_range)
+            Channel 1: hit mask {0, 1} (1 = valid hit, 0 = no return)
+        hit_points : ndarray, shape (N, 3) [only if return_point_cloud=True]
+            3D hit points in BODY FRAME coordinates (drone at origin).
+            Only contains valid hits (where mask == 1).
+        ranges : ndarray, shape (N,) [only if return_point_cloud=True]
+            Range measurements in meters for valid hits.
+        ray_angles : ndarray, shape (N, 2) [only if return_point_cloud=True]
+            [azimuth, elevation] angles in radians for valid hits.
 
         """
-        #### Use default constants if not specified ################
+        #### Use default constants ################
         if max_range is None:
             max_range = self.LIDAR3D_MAX_RANGE
-        if horizontal_res is None:
-            horizontal_res = self.LIDAR3D_HORIZONTAL_RES
-        if vertical_res is None:
-            vertical_res = self.LIDAR3D_VERTICAL_RES
-        if horizontal_fov is None:
-            horizontal_fov = self.LIDAR3D_HORIZONTAL_FOV
-        if vertical_fov is None:
-            vertical_fov = self.LIDAR3D_VERTICAL_FOV
         
-        #### Generate ray directions for hemispherical scan ########
-        # Horizontal: full circle (0 to 360 degrees)
-        # Vertical: upward hemisphere (0 to +vertical_fov degrees)
-        num_horizontal = int(horizontal_fov / horizontal_res)
-        num_vertical = int(vertical_fov / vertical_res) + 1  # +1 to include endpoint (e.g., 90 degrees)
-        total_rays = num_horizontal * num_vertical
+        #### Fixed dimensions for polar range image ########
+        num_beams = self.LIDAR3D_NUM_BEAMS  # H = 16 (vertical)
+        num_bins = self.LIDAR3D_NUM_BINS    # W = 90 (horizontal)
         
-        # Generate angles using meshgrid for vectorized computation
-        horizontal_angles = np.linspace(0, np.deg2rad(horizontal_fov), num_horizontal, endpoint=False)
-        # Vertical angles: from 0 (horizontal/forward) to +vertical_fov (upward)
-        vertical_angles = np.linspace(0, np.deg2rad(vertical_fov), num_vertical, endpoint=True)
+        # Elevation angles: linearly spaced from 0° (horizontal) to 90° (upward)
+        elevation_angles = np.linspace(0, np.deg2rad(self.LIDAR3D_VERTICAL_FOV), num_beams, endpoint=True)
         
-        # Create meshgrid and flatten for all ray combinations
-        h_grid, v_grid = np.meshgrid(horizontal_angles, vertical_angles, indexing='xy')
-        h_flat = h_grid.flatten()
-        v_flat = v_grid.flatten()
+        # Azimuth angles: 0° to 360° (exclusive), centered on bin
+        azimuth_angles = np.linspace(0, 2 * np.pi, num_bins, endpoint=False)
+        
+        # Create meshgrid for all beam-bin combinations: (num_beams, num_bins)
+        az_grid, el_grid = np.meshgrid(azimuth_angles, elevation_angles, indexing='xy')
+        az_flat = az_grid.flatten()
+        el_flat = el_grid.flatten()
         
         #### Get drone position and orientation #####################
         drone_pos = np.array(self.pos[nth_drone, :])
@@ -829,31 +823,27 @@ class BaseAviary(gym.Env):
         #### Generate ray directions in drone's local frame (vectorized) ####
         # Convert spherical to Cartesian coordinates
         # In drone's local frame: X=forward, Y=left, Z=up
-        cos_v = np.cos(v_flat)
-        sin_v = np.sin(v_flat)
-        cos_h = np.cos(h_flat)
-        sin_h = np.sin(h_flat)
+        cos_el = np.cos(el_flat)
+        sin_el = np.sin(el_flat)
+        cos_az = np.cos(az_flat)
+        sin_az = np.sin(az_flat)
         
         ray_dirs_local = np.column_stack([
-            cos_v * cos_h,  # X: Forward component
-            cos_v * sin_h,  # Y: Left component
-            sin_v           # Z: Upward component (positive for upward)
+            cos_el * cos_az,  # X: Forward component
+            cos_el * sin_az,  # Y: Left component
+            sin_el            # Z: Upward component (positive for upward)
         ])
-        ray_angles = np.column_stack([h_flat, v_flat])
         
         #### Apply LiDAR mount pitch rotation (10° forward) ####
         # Rotate all ray directions by +10° around Y axis (pitch forward)
         # This simulates the LiDAR being mounted at a 10° forward angle
         lidar_pitch_deg = 10.0  # Forward pitch angle in degrees
         lidar_pitch_rad = np.deg2rad(lidar_pitch_deg)
-        cos_pitch = np.cos(lidar_pitch_rad)  # Positive for forward pitch
+        cos_pitch = np.cos(lidar_pitch_rad)
         sin_pitch = np.sin(lidar_pitch_rad)
         
         # Rotation matrix around Y axis (pitch forward)
         # Standard right-hand rule: positive rotation rotates Z toward +X (forward tilt)
-        # [cos(θ),  0,  sin(θ)]
-        # [0,       1,  0     ]
-        # [-sin(θ), 0,  cos(θ)]
         pitch_rotation = np.array([
             [cos_pitch, 0, sin_pitch],
             [0, 1, 0],
@@ -867,11 +857,10 @@ class BaseAviary(gym.Env):
         ray_dirs_world = (rot_mat @ ray_dirs_local.T).T
         
         #### Compute ray start and end positions ####################
-        # Get actual total rays from the array size
-        actual_total_rays = len(ray_dirs_local)
+        total_rays = num_beams * num_bins
         
         # Rays start from the LiDAR origin (on top of drone), not from drone center
-        ray_from = np.tile(lidar_origin_world, (actual_total_rays, 1))
+        ray_from = np.tile(lidar_origin_world, (total_rays, 1))
         ray_to = ray_from + ray_dirs_world * max_range
         
         #### Perform batch raycast ####
@@ -886,34 +875,116 @@ class BaseAviary(gym.Env):
             physicsClientId=self.CLIENT
         )
         
-        #### Extract ranges and hit positions ####
-        # PyBullet's rayTestBatch returns the FIRST (closest) hit per ray
-        ranges = np.zeros(actual_total_rays)
-        hit_points_world = np.zeros((actual_total_rays, 3))
+        #### Build range image from raycast results ####
+        # Initialize range image: (H, W, 2)
+        # Channel 0: normalized range [0, 1]
+        # Channel 1: hit mask {0, 1}
+        range_image = np.ones((num_beams, num_bins, 2), dtype=np.float32)
+        range_image[:, :, 1] = 0.0  # Initialize all masks to 0 (no hit)
         
         for i, hit in enumerate(ray_hits):
+            # Compute elevation and azimuth indices from flattened index
+            # Rows are elevation (beams), columns are azimuth (bins)
+            e = i // num_bins  # Elevation index (0 to num_beams-1)
+            a = i % num_bins   # Azimuth index (0 to num_bins-1)
+            
             if hit[0] != -1:  # Hit detected
-                # hit[0] = objectUniqueId, hit[1] = linkIndex
+                # hit[0] = objectUniqueId
                 # hit[2] = hitFraction (0.0 = at ray start, 1.0 = at ray end)
-                # hit[3] = hitPosition (world frame coordinates)
-                # Filter self-hits (they would mask real hits)
+                # Filter self-hits (drone body collisions)
                 if hit[0] == int(self.DRONE_IDS[nth_drone]):
-                    ranges[i] = max_range
-                    hit_points_world[i] = ray_to[i]
+                    # Self-hit: treat as no return
+                    range_image[e, a, 0] = 1.0  # Max range (normalized)
+                    range_image[e, a, 1] = 0.0  # No hit mask
                 else:
-                    ranges[i] = hit[2] * max_range
-                    hit_points_world[i] = hit[3]
+                    # Valid hit: store normalized range and set mask
+                    hit_distance = hit[2] * max_range
+                    range_image[e, a, 0] = min(hit_distance / max_range, 1.0)  # Normalized range [0, 1]
+                    range_image[e, a, 1] = 1.0  # Hit mask
             else:  # No hit
-                ranges[i] = max_range
-                hit_points_world[i] = ray_to[i]
+                range_image[e, a, 0] = 1.0  # Max range (normalized)
+                range_image[e, a, 1] = 0.0  # No hit mask
         
-        #### Transform hit points from world frame to body frame ####
-        # First, translate to body frame origin (subtract drone position)
-        hit_points_body_translated = hit_points_world - drone_pos
-        # Then rotate to body frame (inverse rotation = transpose for rotation matrices)
-        hit_points_body = (rot_mat.T @ hit_points_body_translated.T).T
+        #### Return range image, optionally with point cloud ####
+        if return_point_cloud:
+            # Convert range image to point cloud for visualization
+            hit_points, ranges, ray_angles = self._range_image_to_point_cloud(
+                range_image, elevation_angles, azimuth_angles, max_range,
+                pitch_rotation
+            )
+            return range_image, hit_points, ranges, ray_angles
+        else:
+            # Return only range image (efficient for learning)
+            return range_image
+
+    ################################################################################
+
+    def _range_image_to_point_cloud(self, range_image, elevation_angles, azimuth_angles,
+                                     max_range, pitch_rotation):
+        """Convert polar range image to point cloud (body frame).
         
-        return hit_points_body, ranges, ray_angles
+        This is a helper method for visualization ONLY. Learning pipelines should
+        operate directly on the range image without conversion to point cloud.
+        
+        Parameters
+        ----------
+        range_image : ndarray, shape (H, W, 2)
+            Polar range image with channels [range, hit_mask].
+            Range is normalized [0, 1], mask is {0, 1}.
+        elevation_angles : ndarray, shape (H,)
+            Elevation angles in radians (0 = horizontal, +90° = upward).
+        azimuth_angles : ndarray, shape (W,)
+            Azimuth angles in radians (0 to 2π).
+        max_range : float
+            Maximum range in meters (for denormalization).
+        pitch_rotation : ndarray, shape (3, 3)
+            LiDAR pitch rotation matrix (10° forward).
+        
+        Returns
+        -------
+        hit_points : ndarray, shape (N, 3)
+            3D hit points in body frame (only valid hits where mask == 1).
+            Coordinates: X=forward, Y=left, Z=up.
+        ranges : ndarray, shape (N,)
+            Range measurements in meters (only valid hits).
+        ray_angles : ndarray, shape (N, 2)
+            [azimuth, elevation] in radians for each valid hit.
+        """
+        H, W = range_image.shape[:2]
+        
+        # Extract ranges and masks
+        ranges_normalized = range_image[:, :, 0]  # (H, W)
+        hit_masks = range_image[:, :, 1]          # (H, W)
+        
+        # Find valid hits (mask > 0.5 to handle float precision)
+        valid_mask = hit_masks > 0.5
+        valid_indices = np.where(valid_mask)
+        
+        # Get elevation and azimuth for valid hits
+        el_valid = elevation_angles[valid_indices[0]]
+        az_valid = azimuth_angles[valid_indices[1]]
+        ranges_valid = ranges_normalized[valid_mask] * max_range
+        
+        # Convert spherical to Cartesian (body frame, before pitch)
+        # In body frame: X=forward, Y=left, Z=up
+        cos_el = np.cos(el_valid)
+        sin_el = np.sin(el_valid)
+        cos_az = np.cos(az_valid)
+        sin_az = np.sin(az_valid)
+        
+        hit_points_local = np.column_stack([
+            ranges_valid * cos_el * cos_az,  # X: forward
+            ranges_valid * cos_el * sin_az,  # Y: left
+            ranges_valid * sin_el             # Z: up
+        ])
+        
+        # Apply pitch rotation (10° forward)
+        hit_points_local = (pitch_rotation @ hit_points_local.T).T
+        
+        # Prepare ray angles output
+        ray_angles = np.column_stack([az_valid, el_valid])
+        
+        return hit_points_local, ranges_valid, ray_angles
 
     ################################################################################
 
@@ -1341,7 +1412,9 @@ class BaseAviary(gym.Env):
         Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
 
         """
-        wall_x_position = self.INIT_XYZS[0, 0] + self.WALL_X_OFFSET
+        wall_x_position = self.WALL_X_OFFSET
+        # Debug: verify wall position is fixed (not relative to drone)
+        # print(f"DEBUG: Creating wall at fixed x={wall_x_position}, drone initial x={self.INIT_XYZS[0, 0]}")
         wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
         
         # Create wall from a few larger cubes (not one huge cube, not 30 tiny cubes)
