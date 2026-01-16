@@ -101,8 +101,12 @@ class BaseAviary(gym.Env):
         self.OUTPUT_FOLDER = output_folder
         self.CEILING_HEIGHT = ceiling_height if ceiling_height and ceiling_height > 0 else None
         self.CEILING_ID = None  # Will be set if ceiling is added
-        self.WALL_X_OFFSET = wall_x_offset if wall_x_offset and wall_x_offset > 0 else None
-        self.WALL_ID = None  # Will be set if wall is added
+        # For 5-wall setup (4 outer walls + 1 center wall), wall_x_offset is ignored - walls are positioned at ±room_size/2 and x=0
+        self.ROOM_SIZE = 15.0  # 15m × 15m room (each wall is 15m long)
+        self.WALL_CUBE_IDS = []  # Store outer wall cube IDs (4 walls: North, South, East, West)
+        self.CENTER_WALL_CUBE_IDS = []  # Store center wall cube IDs (1 wall at x=0)
+        self.CENTER_WALL_X_POSITION = None  # Track center wall x-position (None if not created yet)
+        self.WALL_ID = None  # Will be set if walls are added (first outer wall ID for compatibility)
         #### Load the drone properties from the .urdf file #########
         self.M, \
         self.L, \
@@ -533,8 +537,8 @@ class BaseAviary(gym.Env):
             self._addObstacles()
         if self.CEILING_HEIGHT is not None:
             self._addCeiling()
-        if self.WALL_X_OFFSET is not None:
-            self._addWall()
+            # Create 4 outer walls around origin (center wall is added separately during reset)
+            self._addOuterWalls()
     
     ################################################################################
 
@@ -1329,26 +1333,12 @@ class BaseAviary(gym.Env):
         """Add obstacles to the environment.
 
         These obstacles are loaded from standard URDF files included in Bullet.
+        
+        Note: Sphere and cube have been removed - only wall and ceiling remain.
 
         """
-        # p.loadURDF("samurai.urdf",
-        #            physicsClientId=self.CLIENT
-        #            )
-        # p.loadURDF("duck_vhacd.urdf",
-        #            [-.5, -.5, .05],
-        #            p.getQuaternionFromEuler([0, 0, 0]),
-        #            physicsClientId=self.CLIENT
-        #            )
-        p.loadURDF("cube_no_rotation.urdf",
-                   [-.5, -2.5, .5],
-                   p.getQuaternionFromEuler([0, 0, 0]),
-                   physicsClientId=self.CLIENT
-                   )
-        p.loadURDF("sphere2.urdf",
-                   [0, 2, .5],
-                   p.getQuaternionFromEuler([0,0,0]),
-                   physicsClientId=self.CLIENT
-                   )
+        # Obstacles removed - only wall and ceiling are used
+        pass
     
     ################################################################################
     
@@ -1356,25 +1346,30 @@ class BaseAviary(gym.Env):
         """Add a ceiling at the specified height using tiled collision shapes.
 
         Uses 5m×5m tiles to avoid PyBullet's raycast issues with very large shapes.
+        Ceiling covers the entire 15m × 15m room bounded by the 4 outer walls, without extending past them.
 
         """
         ceiling_thickness = 0.3  # Thickness of ceiling tiles
         tile_size = 5.0  # Each tile is 5m × 5m (optimal for PyBullet)
-        ceiling_coverage = 10.0  # Total coverage area (10m × 10m)
+        room_size = self.ROOM_SIZE  # 15m × 15m room
         
-        # Calculate number of tiles needed (2×2 = 4 tiles for 10m×10m)
-        num_tiles = max(1, int(np.ceil(ceiling_coverage / tile_size)))
+        # Ceiling covers the entire room: x and y from -7.5 to +7.5
+        ceiling_start = -room_size / 2
+        ceiling_end = room_size / 2
+        
+        # Calculate number of tiles needed (15m / 5m = 3 tiles per side)
+        num_tiles = max(1, int(np.ceil(room_size / tile_size)))
         
         tile_half_extents = [tile_size / 2, tile_size / 2, ceiling_thickness / 2]
         
         # Store all ceiling tile IDs
         self.CEILING_TILE_IDS = []
         
-        # Create tiles in a grid
+        # Create tiles in a grid covering the entire room
         for ix in range(num_tiles):
             for iy in range(num_tiles):
-                x_pos = -ceiling_coverage / 2 + tile_size / 2 + ix * tile_size
-                y_pos = -ceiling_coverage / 2 + tile_size / 2 + iy * tile_size
+                x_pos = ceiling_start + tile_size / 2 + ix * tile_size
+                y_pos = ceiling_start + tile_size / 2 + iy * tile_size
                 z_pos = self.CEILING_HEIGHT + ceiling_thickness / 2
                 
                 tile_collision = p.createCollisionShape(
@@ -1406,37 +1401,117 @@ class BaseAviary(gym.Env):
     
     ################################################################################
     
-    def _addWall(self):
-        """Add a vertical wall at the specified x-offset using tiled collision shapes.
+    def _addOuterWalls(self):
+        """Add 4 outer walls around the origin, each 15m long, forming a square room.
 
         Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
+        Creates 4 walls: North (y=+7.5), South (y=-7.5), East (x=+7.5), West (x=-7.5).
 
         """
-        wall_x_position = self.WALL_X_OFFSET
-        # Debug: verify wall position is fixed (not relative to drone)
-        # print(f"DEBUG: Creating wall at fixed x={wall_x_position}, drone initial x={self.INIT_XYZS[0, 0]}")
         wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
+        room_size = self.ROOM_SIZE  # 15m × 15m room
+        wall_position = room_size / 2  # Walls at ±7.5m
         
-        # Create wall from a few larger cubes (not one huge cube, not 30 tiny cubes)
-        # PyBullet has issues with very large collision shapes (>10m), so we tile larger chunks
-        # Optimal: Use cubes that are ~5m (works reliably in PyBullet's broad-phase)
-        cube_width = 5.0  # Each cube is 5m wide in Y
+        # Create wall from 5m-wide cubes (optimal for PyBullet)
+        cube_length = 5.0  # Each cube segment is 5m long
         cube_height = wall_height  # Full height (avoids vertical seams)
         wall_thickness = 0.5  # Wall thickness
-        wall_total_width = 10.0  # Total wall coverage in Y direction
         
-        # Calculate number of cubes needed (just 2 cubes for 10m width)
-        num_cubes = max(1, int(np.ceil(wall_total_width / cube_width)))
+        # Calculate number of cubes needed per wall (15m / 5m = 3 cubes per wall)
+        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length)))
         
-        cube_half_extents = [wall_thickness / 2, cube_width / 2, cube_height / 2]
-        
-        # Store all wall cube IDs
+        # Store outer wall cube IDs
         self.WALL_CUBE_IDS = []
         
-        # Create side-by-side cubes
-        for i in range(num_cubes):
-            # Position cubes side by side in Y direction
-            y_pos = -wall_total_width / 2 + cube_width / 2 + i * cube_width
+        # Create 4 outer walls: North, South, East, West
+        wall_configs = [
+            # (name, axis, position, orientation)
+            ("North", "x", wall_position, 0),   # Wall at y=+7.5, extends in x-direction
+            ("South", "x", -wall_position, 0),  # Wall at y=-7.5, extends in x-direction
+            ("East", "y", wall_position, 90),   # Wall at x=+7.5, extends in y-direction
+            ("West", "y", -wall_position, 90),  # Wall at x=-7.5, extends in y-direction
+        ]
+        
+        for wall_name, axis, position, rotation_deg in wall_configs:
+            for i in range(num_cubes_per_wall):
+                # Calculate position along the wall
+                offset = -room_size / 2 + cube_length / 2 + i * cube_length
+                
+                if axis == "x":
+                    # Wall extends in x-direction (North/South walls)
+                    x_pos = offset
+                    y_pos = position
+                    # Half extents: [length/2, thickness/2, height/2]
+                    cube_half_extents = [cube_length / 2, wall_thickness / 2, cube_height / 2]
+                else:  # axis == "y"
+                    # Wall extends in y-direction (East/West walls)
+                    x_pos = position
+                    y_pos = offset
+                    # Half extents: [thickness/2, length/2, height/2]
+                    cube_half_extents = [wall_thickness / 2, cube_length / 2, cube_height / 2]
+                
+                z_pos = cube_height / 2  # Center vertically
+                
+                cube_collision = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=cube_half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                cube_visual = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=cube_half_extents,
+                    rgbaColor=[0.7, 0.7, 0.7, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+                cube_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=cube_collision,
+                    baseVisualShapeIndex=cube_visual,
+                    basePosition=[x_pos, y_pos, z_pos],
+                    physicsClientId=self.CLIENT
+                )
+                self.WALL_CUBE_IDS.append(cube_id)
+        
+        # Use the first cube as the main WALL_ID for compatibility
+        self.WALL_ID = self.WALL_CUBE_IDS[0] if self.WALL_CUBE_IDS else None
+        
+        # Step simulation to ensure collision shapes are initialized
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+    
+    def _addCenterWall(self, x_position: float = 0.0):
+        """Add center wall that splits the room into two halves (at specified x position, extends in y-direction).
+
+        Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
+        Currently fixed at x=0 by default, but can be modified in the future for randomization.
+
+        Parameters:
+            x_position : float, optional
+                - X position of the center wall. Default is 0.0.
+        """
+        wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
+        room_size = self.ROOM_SIZE  # 15m × 15m room
+        
+        # Create wall from 5m-wide cubes (optimal for PyBullet)
+        cube_length = 5.0  # Each cube segment is 5m long
+        cube_height = wall_height  # Full height (avoids vertical seams)
+        wall_thickness = 0.5  # Wall thickness
+        
+        # Calculate number of cubes needed per wall (15m / 5m = 3 cubes per wall)
+        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length)))
+        
+        # Store center wall cube IDs
+        self.CENTER_WALL_CUBE_IDS = []
+        
+        # Add center wall that splits the room into two halves (at specified x position, extends in y-direction)
+        center_wall_position = x_position
+        for i in range(num_cubes_per_wall):
+            # Calculate position along the wall
+            offset = -room_size / 2 + cube_length / 2 + i * cube_length
+            x_pos = center_wall_position
+            y_pos = offset
+            # Half extents: [thickness/2, length/2, height/2]
+            cube_half_extents = [wall_thickness / 2, cube_length / 2, cube_height / 2]
             z_pos = cube_height / 2  # Center vertically
             
             cube_collision = p.createCollisionShape(
@@ -1454,13 +1529,73 @@ class BaseAviary(gym.Env):
                 baseMass=0,
                 baseCollisionShapeIndex=cube_collision,
                 baseVisualShapeIndex=cube_visual,
-                basePosition=[wall_x_position, y_pos, z_pos],
+                basePosition=[x_pos, y_pos, z_pos],
                 physicsClientId=self.CLIENT
             )
-            self.WALL_CUBE_IDS.append(cube_id)
+            self.CENTER_WALL_CUBE_IDS.append(cube_id)
         
-        # Use the first cube as the main WALL_ID for compatibility
-        self.WALL_ID = self.WALL_CUBE_IDS[0] if self.WALL_CUBE_IDS else None
+        # Track the wall position
+        self.CENTER_WALL_X_POSITION = center_wall_position
+        
+        # Step simulation to ensure collision shapes are initialized
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+    
+    def _removeCenterWall(self):
+        """Remove the center wall cubes from the simulation."""
+        import pybullet as p
+        for cube_id in self.CENTER_WALL_CUBE_IDS:
+            p.removeBody(cube_id, physicsClientId=self.CLIENT)
+        self.CENTER_WALL_CUBE_IDS = []
+        self.CENTER_WALL_X_POSITION = None
+    
+    ################################################################################
+    
+    def _addVerticalPoles(self, pole_positions, pole_diameter, pole_height=None):
+        """Add vertical cylindrical poles from floor to ceiling.
+        
+        Parameters:
+            pole_positions : list of [x, y] pairs
+                - List of [x, y] positions for each pole in meters.
+            pole_diameter : float
+                - Diameter of the poles in meters.
+            pole_height : float, optional
+                - Height of the poles in meters. If None, uses CEILING_HEIGHT.
+        """
+        if pole_height is None:
+            pole_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
+        
+        pole_radius = pole_diameter / 2.0
+        pole_z_center = pole_height / 2.0  # Center vertically
+        
+        # Store pole IDs
+        self.POLE_IDS = []
+        
+        for x_pos, y_pos in pole_positions:
+            # Create cylindrical collision shape
+            pole_collision = p.createCollisionShape(
+                p.GEOM_CYLINDER,
+                radius=pole_radius,
+                height=pole_height,
+                physicsClientId=self.CLIENT
+            )
+            # Create cylindrical visual shape
+            pole_visual = p.createVisualShape(
+                p.GEOM_CYLINDER,
+                radius=pole_radius,
+                length=pole_height,
+                rgbaColor=[0.6, 0.6, 0.6, 1.0],  # Gray color
+                physicsClientId=self.CLIENT
+            )
+            # Create the pole body
+            pole_id = p.createMultiBody(
+                baseMass=0,  # Static object
+                baseCollisionShapeIndex=pole_collision,
+                baseVisualShapeIndex=pole_visual,
+                basePosition=[x_pos, y_pos, pole_z_center],
+                physicsClientId=self.CLIENT
+            )
+            self.POLE_IDS.append(pole_id)
         
         # Step simulation to ensure collision shapes are initialized
         for _ in range(10):
