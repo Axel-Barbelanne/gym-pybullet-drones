@@ -1479,7 +1479,7 @@ class BaseAviary(gym.Env):
         for _ in range(10):
             p.stepSimulation(physicsClientId=self.CLIENT)
     
-    def _addCenterWall(self, x_position: float = 0.0):
+    def _addCenterWall(self, x_position: float = 0.0, window_position: list = None):
         """Add center wall that splits the room into two halves (at specified x position, extends in y-direction).
 
         Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
@@ -1488,6 +1488,9 @@ class BaseAviary(gym.Env):
         Parameters:
             x_position : float, optional
                 - X position of the center wall. Default is 0.0.
+            window_position : list, optional
+                - [y_center, z_center] position of the window center in meters. Default is None.
+                - The window position is stored for task logic but doesn't create a physical hole in the wall.
         """
         wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
         room_size = self.ROOM_SIZE  # 15m × 15m room
@@ -1536,6 +1539,10 @@ class BaseAviary(gym.Env):
         
         # Track the wall position
         self.CENTER_WALL_X_POSITION = center_wall_position
+        
+        # Store window position if provided (for task logic, wall remains solid)
+        if window_position is not None:
+            self.CENTER_WALL_WINDOW_POSITION = window_position
         
         # Step simulation to ensure collision shapes are initialized
         for _ in range(10):
