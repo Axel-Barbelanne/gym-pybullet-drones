@@ -1490,7 +1490,7 @@ class BaseAviary(gym.Env):
                 - X position of the center wall. Default is 0.0.
             window_position : list, optional
                 - [y_center, z_center] position of the window center in meters. Default is None.
-                - The window position is stored for task logic but doesn't create a physical hole in the wall.
+                - If provided, creates a 1m × 1m visual hole in the wall at the specified position.
         """
         wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
         room_size = self.ROOM_SIZE  # 15m × 15m room
@@ -1508,34 +1508,121 @@ class BaseAviary(gym.Env):
         
         # Add center wall that splits the room into two halves (at specified x position, extends in y-direction)
         center_wall_position = x_position
+        
+        # Window parameters (if window exists)
+        window_y_center = None
+        window_z_center = None
+        window_half_size = 0.5  # 1m × 1m window, half-size is 0.5m
+        if window_position is not None:
+            window_y_center = window_position[0]  # y position of window center
+            window_z_center = window_position[1]  # z position of window center
+        
         for i in range(num_cubes_per_wall):
             # Calculate position along the wall
             offset = -room_size / 2 + cube_length / 2 + i * cube_length
             x_pos = center_wall_position
             y_pos = offset
-            # Half extents: [thickness/2, length/2, height/2]
-            cube_half_extents = [wall_thickness / 2, cube_length / 2, cube_height / 2]
-            z_pos = cube_height / 2  # Center vertically
             
-            cube_collision = p.createCollisionShape(
-                p.GEOM_BOX,
-                halfExtents=cube_half_extents,
-                physicsClientId=self.CLIENT
-            )
-            cube_visual = p.createVisualShape(
-                p.GEOM_BOX,
-                halfExtents=cube_half_extents,
-                rgbaColor=[0.7, 0.7, 0.7, 1.0],
-                physicsClientId=self.CLIENT
-            )
-            cube_id = p.createMultiBody(
-                baseMass=0,
-                baseCollisionShapeIndex=cube_collision,
-                baseVisualShapeIndex=cube_visual,
-                basePosition=[x_pos, y_pos, z_pos],
-                physicsClientId=self.CLIENT
-            )
-            self.CENTER_WALL_CUBE_IDS.append(cube_id)
+            # Check if window overlaps with this cube's y-range
+            cube_y_min = y_pos - cube_length / 2
+            cube_y_max = y_pos + cube_length / 2
+            window_overlaps_y = False
+            window_y_min = None
+            window_y_max = None
+            if window_y_center is not None:
+                window_y_min = window_y_center - window_half_size
+                window_y_max = window_y_center + window_half_size
+                window_overlaps_y = not (window_y_max < cube_y_min or window_y_min > cube_y_max)
+            
+            # Check if window overlaps with this cube's z-range
+            window_overlaps_z = False
+            window_z_min = None
+            window_z_max = None
+            if window_z_center is not None:
+                window_z_min = window_z_center - window_half_size
+                window_z_max = window_z_center + window_half_size
+                # Window overlaps if it's within the wall height (0 to cube_height)
+                window_overlaps_z = not (window_z_max < 0 or window_z_min > cube_height)
+            
+            # If window overlaps both y and z, create wall segments around the window
+            if window_overlaps_y and window_overlaps_z and window_y_min is not None and window_z_min is not None:
+                # Create wall segments to form a 1m×1m hole
+                # We need: full-width below, left/right at window height, full-width above
+                
+                # 1. Full-width segment BELOW the window (spans entire cube width)
+                if window_z_min > 0.05:
+                    z_below_center = window_z_min / 2
+                    height_below = window_z_min
+                    cube_half_extents = [wall_thickness / 2, cube_length / 2, height_below / 2]
+                    cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, y_pos, z_below_center], physicsClientId=self.CLIENT)
+                    self.CENTER_WALL_CUBE_IDS.append(cube_id)
+                
+                # 2. Left segment at window height (from cube left edge to window left edge)
+                if window_y_min > cube_y_min + 0.05:
+                    left_segment_y_min = cube_y_min
+                    left_segment_y_max = window_y_min
+                    left_segment_y_center = (left_segment_y_min + left_segment_y_max) / 2
+                    left_segment_length = left_segment_y_max - left_segment_y_min
+                    window_height = window_z_max - window_z_min
+                    z_window_center = (window_z_min + window_z_max) / 2
+                    
+                    cube_half_extents = [wall_thickness / 2, left_segment_length / 2, window_height / 2]
+                    cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, left_segment_y_center, z_window_center], physicsClientId=self.CLIENT)
+                    self.CENTER_WALL_CUBE_IDS.append(cube_id)
+                
+                # 3. Right segment at window height (from window right edge to cube right edge)
+                if window_y_max < cube_y_max - 0.05:
+                    right_segment_y_min = window_y_max
+                    right_segment_y_max = cube_y_max
+                    right_segment_y_center = (right_segment_y_min + right_segment_y_max) / 2
+                    right_segment_length = right_segment_y_max - right_segment_y_min
+                    window_height = window_z_max - window_z_min
+                    z_window_center = (window_z_min + window_z_max) / 2
+                    
+                    cube_half_extents = [wall_thickness / 2, right_segment_length / 2, window_height / 2]
+                    cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, right_segment_y_center, z_window_center], physicsClientId=self.CLIENT)
+                    self.CENTER_WALL_CUBE_IDS.append(cube_id)
+                
+                # 4. Full-width segment ABOVE the window (spans entire cube width)
+                if window_z_max < cube_height - 0.05:
+                    z_above_center = (window_z_max + cube_height) / 2
+                    height_above = cube_height - window_z_max
+                    cube_half_extents = [wall_thickness / 2, cube_length / 2, height_above / 2]
+                    cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, y_pos, z_above_center], physicsClientId=self.CLIENT)
+                    self.CENTER_WALL_CUBE_IDS.append(cube_id)
+            else:
+                # No window overlap, create full-height cube as normal
+                # Half extents: [thickness/2, length/2, height/2]
+                cube_half_extents = [wall_thickness / 2, cube_length / 2, cube_height / 2]
+                z_pos = cube_height / 2  # Center vertically
+                
+                cube_collision = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=cube_half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                cube_visual = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=cube_half_extents,
+                    rgbaColor=[0.7, 0.7, 0.7, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+                cube_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=cube_collision,
+                    baseVisualShapeIndex=cube_visual,
+                    basePosition=[x_pos, y_pos, z_pos],
+                    physicsClientId=self.CLIENT
+                )
+                self.CENTER_WALL_CUBE_IDS.append(cube_id)
         
         # Track the wall position
         self.CENTER_WALL_X_POSITION = center_wall_position
