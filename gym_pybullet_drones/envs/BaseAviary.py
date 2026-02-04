@@ -536,6 +536,7 @@ class BaseAviary(gym.Env):
         if self.OBSTACLES:
             self._addObstacles()
         if self.CEILING_HEIGHT is not None:
+            self._addFloor()
             self._addCeiling()
             # Create 4 outer walls around origin (center wall is added separately during reset)
             self._addOuterWalls()
@@ -628,7 +629,10 @@ class BaseAviary(gym.Env):
         rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
         #### Set target point, camera view and projection matrices #
         target = np.dot(rot_mat,np.array([1000, 0, 0])) + np.array(self.pos[nth_drone, :])
-        DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :]+np.array([0, 0, self.L]),
+        # Camera offset: forward (X) by 0.08m, up (Z) by L to avoid seeing drone body
+        camera_offset_body = np.array([0.08, 0, self.L])  # Forward 8cm, up by L
+        camera_offset_world = np.dot(rot_mat, camera_offset_body)  # Transform to world frame
+        DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :] + camera_offset_world,
                                              cameraTargetPosition=target,
                                              cameraUpVector=[0, 0, 1],
                                              physicsClientId=self.CLIENT
@@ -1380,7 +1384,7 @@ class BaseAviary(gym.Env):
                 tile_visual = p.createVisualShape(
                     p.GEOM_BOX,
                     halfExtents=tile_half_extents,
-                    rgbaColor=[0.8, 0.8, 0.8, 1.0],
+                    rgbaColor=[0.7, 0.7, 0.7, 1.0],  # Grey
                     physicsClientId=self.CLIENT
                 )
                 tile_id = p.createMultiBody(
@@ -1394,6 +1398,65 @@ class BaseAviary(gym.Env):
         
         # Use the first tile as the main CEILING_ID for compatibility
         self.CEILING_ID = self.CEILING_TILE_IDS[0] if self.CEILING_TILE_IDS else None
+        
+        # Step simulation to ensure collision shapes are initialized
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+    
+    ################################################################################
+    
+    def _addFloor(self):
+        """Add a floor at z=0 using tiled collision shapes.
+
+        Uses 5m×5m tiles to avoid PyBullet's raycast issues with very large shapes.
+        Floor covers the entire 15m × 15m room bounded by the 4 outer walls, without extending past them.
+
+        """
+        floor_thickness = 0.1  # Thickness of floor tiles (thinner than ceiling)
+        tile_size = 5.0  # Each tile is 5m × 5m (optimal for PyBullet)
+        room_size = self.ROOM_SIZE  # 15m × 15m room
+        
+        # Floor covers the entire room: x and y from -7.5 to +7.5
+        floor_start = -room_size / 2
+        floor_end = room_size / 2
+        
+        # Calculate number of tiles needed (15m / 5m = 3 tiles per side)
+        num_tiles = max(1, int(np.ceil(room_size / tile_size)))
+        
+        tile_half_extents = [tile_size / 2, tile_size / 2, floor_thickness / 2]
+        
+        # Store all floor tile IDs
+        self.FLOOR_TILE_IDS = []
+        
+        # Create tiles in a grid covering the entire room
+        for ix in range(num_tiles):
+            for iy in range(num_tiles):
+                x_pos = floor_start + tile_size / 2 + ix * tile_size
+                y_pos = floor_start + tile_size / 2 + iy * tile_size
+                z_pos = floor_thickness / 2  # Floor at z=0, with half thickness above
+                
+                tile_collision = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=tile_half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                tile_visual = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=tile_half_extents,
+                    rgbaColor=[0.7, 0.7, 0.7, 1.0],  # Grey
+                    physicsClientId=self.CLIENT
+                )
+                tile_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=tile_collision,
+                    baseVisualShapeIndex=tile_visual,
+                    basePosition=[x_pos, y_pos, z_pos],
+                    physicsClientId=self.CLIENT
+                )
+                self.FLOOR_TILE_IDS.append(tile_id)
+        
+        # Use the first tile as the main FLOOR_ID for compatibility
+        self.FLOOR_ID = self.FLOOR_TILE_IDS[0] if self.FLOOR_TILE_IDS else None
         
         # Step simulation to ensure collision shapes are initialized
         for _ in range(10):
@@ -1460,7 +1523,7 @@ class BaseAviary(gym.Env):
                 cube_visual = p.createVisualShape(
                     p.GEOM_BOX,
                     halfExtents=cube_half_extents,
-                    rgbaColor=[0.7, 0.7, 0.7, 1.0],
+                    rgbaColor=[0.2, 0.4, 0.8, 1.0],  # Blue (outer walls)
                     physicsClientId=self.CLIENT
                 )
                 cube_id = p.createMultiBody(
@@ -1555,7 +1618,7 @@ class BaseAviary(gym.Env):
                     height_below = window_z_min
                     cube_half_extents = [wall_thickness / 2, cube_length / 2, height_below / 2]
                     cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
-                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.8, 0.2, 0.2, 1.0], physicsClientId=self.CLIENT)  # Red (center wall)
                     cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, y_pos, z_below_center], physicsClientId=self.CLIENT)
                     self.CENTER_WALL_CUBE_IDS.append(cube_id)
                 
@@ -1570,7 +1633,7 @@ class BaseAviary(gym.Env):
                     
                     cube_half_extents = [wall_thickness / 2, left_segment_length / 2, window_height / 2]
                     cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
-                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.8, 0.2, 0.2, 1.0], physicsClientId=self.CLIENT)  # Red (center wall)
                     cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, left_segment_y_center, z_window_center], physicsClientId=self.CLIENT)
                     self.CENTER_WALL_CUBE_IDS.append(cube_id)
                 
@@ -1585,7 +1648,7 @@ class BaseAviary(gym.Env):
                     
                     cube_half_extents = [wall_thickness / 2, right_segment_length / 2, window_height / 2]
                     cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
-                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.8, 0.2, 0.2, 1.0], physicsClientId=self.CLIENT)  # Red (center wall)
                     cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, right_segment_y_center, z_window_center], physicsClientId=self.CLIENT)
                     self.CENTER_WALL_CUBE_IDS.append(cube_id)
                 
@@ -1595,7 +1658,7 @@ class BaseAviary(gym.Env):
                     height_above = cube_height - window_z_max
                     cube_half_extents = [wall_thickness / 2, cube_length / 2, height_above / 2]
                     cube_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_half_extents, physicsClientId=self.CLIENT)
-                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.7, 0.7, 0.7, 1.0], physicsClientId=self.CLIENT)
+                    cube_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_half_extents, rgbaColor=[0.8, 0.2, 0.2, 1.0], physicsClientId=self.CLIENT)  # Red (center wall)
                     cube_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=cube_collision, baseVisualShapeIndex=cube_visual, basePosition=[x_pos, y_pos, z_above_center], physicsClientId=self.CLIENT)
                     self.CENTER_WALL_CUBE_IDS.append(cube_id)
             else:
@@ -1612,7 +1675,7 @@ class BaseAviary(gym.Env):
                 cube_visual = p.createVisualShape(
                     p.GEOM_BOX,
                     halfExtents=cube_half_extents,
-                    rgbaColor=[0.7, 0.7, 0.7, 1.0],
+                    rgbaColor=[0.8, 0.2, 0.2, 1.0],  # Red (center wall)
                     physicsClientId=self.CLIENT
                 )
                 cube_id = p.createMultiBody(
@@ -1678,7 +1741,7 @@ class BaseAviary(gym.Env):
                 p.GEOM_CYLINDER,
                 radius=pole_radius,
                 length=pole_height,
-                rgbaColor=[0.6, 0.6, 0.6, 1.0],  # Gray color
+                rgbaColor=[0.9, 0.7, 0.1, 1.0],  # Yellow
                 physicsClientId=self.CLIENT
             )
             # Create the pole body
