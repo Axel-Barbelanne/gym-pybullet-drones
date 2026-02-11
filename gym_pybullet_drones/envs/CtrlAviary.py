@@ -24,7 +24,7 @@ class CtrlAviary(BaseAviary):
                  user_debug_gui=True,
                  vision_attributes=False,
                  output_folder='results',
-                 ceiling_height: float=3.0,
+                 ceiling_height: float=2.5,
                  wall_x_offset: float=3.0
                  ):
         """Initialization of an aviary environment for control applications.
@@ -56,7 +56,7 @@ class CtrlAviary(BaseAviary):
         user_debug_gui : bool, optional
             Whether to draw the drones' axes and the GUI RPMs sliders.
         ceiling_height : float, optional
-            Height of the ceiling in meters. Default is 3.0 meters.
+            Height of the ceiling in meters. Default is 2.5 meters.
         wall_x_offset : float, optional
             Distance along x-axis from the first drone to place a wall. Default is 3.0 meters.
 

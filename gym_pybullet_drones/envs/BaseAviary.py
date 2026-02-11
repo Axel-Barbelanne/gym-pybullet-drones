@@ -37,7 +37,7 @@ class BaseAviary(gym.Env):
                  user_debug_gui=True,
                  vision_attributes=False,
                  output_folder='results',
-                 ceiling_height: float=3.0,
+                 ceiling_height: float=2.5,
                  wall_x_offset: float=3
                  ):
         """Initialization of a generic aviary environment.
@@ -71,7 +71,7 @@ class BaseAviary(gym.Env):
         vision_attributes : bool, optional
             Whether to allocate the attributes needed by vision-based aviary subclasses.
         ceiling_height : float, optional
-            Height of the ceiling in meters. If None or <= 0, no ceiling is added. Default is 2.0 meters.
+            Height of the ceiling in meters. If None or <= 0, no ceiling is added. Default is 2.5 meters.
         wall_x_offset : float, optional
             X position in world coordinates where the wall is placed. If None or <= 0, no wall is added. Default is 3.0 meters.
 

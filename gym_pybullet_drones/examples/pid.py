@@ -348,7 +348,7 @@ def run(
                         obstacles=obstacles,
                         user_debug_gui=user_debug_gui,
                         vision_attributes=show_camera or show_lidar3d,  # Enable vision if camera or 3D LiDAR is enabled
-                        ceiling_height=3.0,  # Ceiling at 3m height
+                        ceiling_height=2.5,  # Ceiling at 2.5m height (matches sim_constants)
                         wall_x_offset=3.0    # Wall 3m in front of drone
                         )
 
