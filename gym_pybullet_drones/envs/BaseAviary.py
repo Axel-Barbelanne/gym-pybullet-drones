@@ -637,8 +637,15 @@ class BaseAviary(gym.Env):
                                              cameraUpVector=[0, 0, 1],
                                              physicsClientId=self.CLIENT
                                              )
-        DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=60.0,
-                                                      aspect=1.0,
+        # 90° horizontal FOV with correct aspect ratio for 64x48 resolution.
+        # PyBullet expects vertical FOV, so derive it:
+        #   vfov = 2 * atan(tan(hfov/2) / aspect)
+        # With hfov=90° and aspect=64/48=1.333 → vfov ≈ 73.74°
+        cam_aspect = self.IMG_RES[0] / self.IMG_RES[1]  # width / height
+        hfov_rad = np.deg2rad(90.0)
+        vfov_deg = float(np.rad2deg(2.0 * np.arctan(np.tan(hfov_rad / 2.0) / cam_aspect)))
+        DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=vfov_deg,
+                                                      aspect=cam_aspect,
                                                       nearVal=self.L,
                                                       farVal=1000.0
                                                       )
