@@ -1760,6 +1760,84 @@ class BaseAviary(gym.Env):
     
     ################################################################################
     
+    def _addWallPatches(self, patch_positions: list, patch_size: float = 0.5,
+                        patch_color: list = None, wall_offset: float = 0.01):
+        """Add visual-only colored patches on outer walls.
+
+        These patches have NO collision shape so LiDAR raycasts pass through them,
+        but they are visible to the camera.  Each patch is a thin box placed
+        slightly in front of the wall surface.
+
+        Parameters
+        ----------
+        patch_positions : list of dict
+            Each dict contains:
+              - 'wall': str – one of 'north','south','east','west'
+              - 'position': [x, y, z] – centre of the patch on the wall surface
+              - 'normal': [nx, ny, nz] – outward normal of the wall at this point
+        patch_size : float, optional
+            Side length of the square patch in metres.  Default is 0.5 m.
+        patch_color : list, optional
+            RGBA colour of the patch.  Default is white [1,1,1,1].
+        wall_offset : float, optional
+            Offset from the wall surface along the normal to avoid z-fighting.
+            Default is 0.01 m.
+        """
+        if patch_color is None:
+            patch_color = [1.0, 1.0, 1.0, 1.0]
+
+        # Initialise storage
+        if not hasattr(self, 'PATCH_IDS'):
+            self.PATCH_IDS = []
+
+        half = patch_size / 2.0
+        thin = 0.005  # very thin box (visual only, so thickness is cosmetic)
+
+        for patch_info in patch_positions:
+            wall = patch_info['wall']
+            pos = patch_info['position']  # [x, y, z] on inner wall surface
+            normal = patch_info['normal']  # inward normal (toward room centre)
+
+            # Offset position slightly along inward normal so patch sits in front of wall
+            vis_pos = [
+                pos[0] + normal[0] * wall_offset,
+                pos[1] + normal[1] * wall_offset,
+                pos[2] + normal[2] * wall_offset,
+            ]
+
+            # Half-extents depend on wall orientation
+            if wall in ('north', 'south'):
+                # Wall perpendicular to Y axis → patch extends in X and Z
+                half_extents = [half, thin, half]
+            else:
+                # Wall perpendicular to X axis → patch extends in Y and Z
+                half_extents = [thin, half, half]
+
+            vis_shape = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=half_extents,
+                rgbaColor=patch_color,
+                physicsClientId=self.CLIENT,
+            )
+            # No collision shape (-1) → LiDAR ignores it
+            patch_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=-1,
+                baseVisualShapeIndex=vis_shape,
+                basePosition=vis_pos,
+                physicsClientId=self.CLIENT,
+            )
+            self.PATCH_IDS.append(patch_id)
+
+    def _removeWallPatches(self):
+        """Remove all wall patches from the simulation."""
+        if hasattr(self, 'PATCH_IDS'):
+            for patch_id in self.PATCH_IDS:
+                p.removeBody(patch_id, physicsClientId=self.CLIENT)
+            self.PATCH_IDS = []
+
+    ################################################################################
+    
     def _parseURDFParameters(self):
         """Loads parameters from an URDF file.
 
