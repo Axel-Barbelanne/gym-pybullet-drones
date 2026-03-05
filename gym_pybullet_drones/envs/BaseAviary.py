@@ -106,6 +106,7 @@ class BaseAviary(gym.Env):
         self.WALL_CUBE_IDS = []  # Store outer wall cube IDs (4 walls: North, South, East, West)
         self.CENTER_WALL_CUBE_IDS = []  # Store center wall cube IDs (1 wall at x=0)
         self.CENTER_WALL_X_POSITION = None  # Track center wall x-position (None if not created yet)
+        self.DISTRACTOR_IDS = []  # Store distractor obstacle IDs
         self.WALL_ID = None  # Will be set if walls are added (first outer wall ID for compatibility)
         #### Load the drone properties from the .urdf file #########
         self.M, \
@@ -1835,6 +1836,91 @@ class BaseAviary(gym.Env):
             for patch_id in self.PATCH_IDS:
                 p.removeBody(patch_id, physicsClientId=self.CLIENT)
             self.PATCH_IDS = []
+
+    def _addDistractorObstacles(self, distractor_obstacles: list):
+        """Add static distractor obstacles (spheres and boxes).
+
+        Distractors keep collision shapes so LiDAR raycasts can hit them, but
+        collisions with drone bodies are disabled to prevent crash contacts.
+        """
+        if not hasattr(self, 'DISTRACTOR_IDS'):
+            self.DISTRACTOR_IDS = []
+
+        for obstacle in distractor_obstacles:
+            shape = obstacle.get('shape')
+            position = obstacle.get('position', [0.0, 0.0, 1.0])
+            size = obstacle.get('size', [0.2, 0.2, 0.2])
+
+            if shape == 'sphere':
+                radius = float(size[0])
+                collision_id = p.createCollisionShape(
+                    p.GEOM_SPHERE,
+                    radius=radius,
+                    physicsClientId=self.CLIENT
+                )
+                visual_id = p.createVisualShape(
+                    p.GEOM_SPHERE,
+                    radius=radius,
+                    rgbaColor=[0.65, 0.25, 0.85, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+            elif shape == 'box':
+                half_extents = [float(size[0]), float(size[1]), float(size[2])]
+                collision_id = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                visual_id = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=half_extents,
+                    rgbaColor=[0.20, 0.75, 0.55, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+            else:
+                continue
+
+            body_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=collision_id,
+                baseVisualShapeIndex=visual_id,
+                basePosition=[float(position[0]), float(position[1]), float(position[2])],
+                physicsClientId=self.CLIENT
+            )
+
+            # Keep distractors visible to LiDAR (collision shape exists) while
+            # making them non-collidable for the drone.
+            if hasattr(self, 'DRONE_IDS'):
+                for drone_id in self.DRONE_IDS:
+                    p.setCollisionFilterPair(
+                        bodyUniqueIdA=body_id,
+                        bodyUniqueIdB=int(drone_id),
+                        linkIndexA=-1,
+                        linkIndexB=-1,
+                        enableCollision=0,
+                        physicsClientId=self.CLIENT
+                    )
+                    num_links = p.getNumJoints(int(drone_id), physicsClientId=self.CLIENT)
+                    for link_idx in range(num_links):
+                        p.setCollisionFilterPair(
+                            bodyUniqueIdA=body_id,
+                            bodyUniqueIdB=int(drone_id),
+                            linkIndexA=-1,
+                            linkIndexB=link_idx,
+                            enableCollision=0,
+                            physicsClientId=self.CLIENT
+                        )
+            self.DISTRACTOR_IDS.append(body_id)
+
+        for _ in range(5):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+
+    def _removeDistractorObstacles(self):
+        """Remove all distractor obstacles from the simulation."""
+        if hasattr(self, 'DISTRACTOR_IDS'):
+            for obstacle_id in self.DISTRACTOR_IDS:
+                p.removeBody(obstacle_id, physicsClientId=self.CLIENT)
+            self.DISTRACTOR_IDS = []
 
     ################################################################################
     
