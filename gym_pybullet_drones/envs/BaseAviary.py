@@ -13,6 +13,23 @@ import pybullet as p
 import pybullet_data
 import gymnasium as gym
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
+try:
+    from constants.sensor_constants import (
+        CAMERA_IMAGE_HEIGHT as SENSOR_CAMERA_IMAGE_HEIGHT,
+        CAMERA_IMAGE_WIDTH as SENSOR_CAMERA_IMAGE_WIDTH,
+        CAMERA_HFOV as SENSOR_CAMERA_HFOV,
+        LIDAR3D_MAX_RANGE_M as SENSOR_LIDAR3D_MAX_RANGE_M,
+        LIDAR3D_VERTICAL_NUM_RAYS as SENSOR_LIDAR3D_VERTICAL_NUM_RAYS,
+        LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG as SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG,
+    )
+except Exception:
+    # Fallback values keep submodule behavior usable in standalone contexts.
+    SENSOR_CAMERA_IMAGE_HEIGHT = 48
+    SENSOR_CAMERA_IMAGE_WIDTH = 64
+    SENSOR_CAMERA_HFOV = 90.0
+    SENSOR_LIDAR3D_MAX_RANGE_M = 5.0
+    SENSOR_LIDAR3D_VERTICAL_NUM_RAYS = 16
+    SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG = 4.0
 
 
 class BaseAviary(gym.Env):
@@ -154,18 +171,22 @@ class BaseAviary(gym.Env):
         self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
         self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
         # 3D LiDAR constants - Polar Range Image Representation
-        self.LIDAR3D_MAX_RANGE = 5.0  # Maximum detection range in meters
-        self.LIDAR3D_NUM_BEAMS = 16  # Vertical beams (elevation channels) for range image
-        self.LIDAR3D_NUM_BINS = 90   # Horizontal bins (azimuth channels) for range image
+        self.LIDAR3D_MAX_RANGE = float(SENSOR_LIDAR3D_MAX_RANGE_M)  # Maximum detection range in meters
+        self.LIDAR3D_NUM_BEAMS = max(2, int(SENSOR_LIDAR3D_VERTICAL_NUM_RAYS))  # Vertical beams (elevation channels)
         self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
         self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere upward: 0 to +90)
-        # Computed resolutions based on fixed beam/bin configuration
+        # Derive horizontal bin count from target angular precision.
+        self.LIDAR3D_NUM_BINS = max(
+            1,
+            int(np.round(self.LIDAR3D_HORIZONTAL_FOV / float(SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG))),
+        )
+        # Computed resolutions based on configured beam/bin values.
         self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / (self.LIDAR3D_NUM_BEAMS - 1)  # ~6° per beam
-        self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS  # 4° per bin
+        self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS
         self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
         self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
         if self.VISION_ATTR:
-            self.IMG_RES = np.array([64, 48])
+            self.IMG_RES = np.array([SENSOR_CAMERA_IMAGE_WIDTH, SENSOR_CAMERA_IMAGE_HEIGHT])
             self.IMG_FRAME_PER_SEC = 24
             self.IMG_CAPTURE_FREQ = int(self.PYB_FREQ/self.IMG_FRAME_PER_SEC)
             self.rgb = np.zeros(((self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0], 4)))
@@ -638,12 +659,10 @@ class BaseAviary(gym.Env):
                                              cameraUpVector=[0, 0, 1],
                                              physicsClientId=self.CLIENT
                                              )
-        # 90° horizontal FOV with correct aspect ratio for 64x48 resolution.
-        # PyBullet expects vertical FOV, so derive it:
-        #   vfov = 2 * atan(tan(hfov/2) / aspect)
-        # With hfov=90° and aspect=64/48=1.333 → vfov ≈ 73.74°
+        # Keep camera model consistent with project assumptions:
+        # 90° horizontal FOV on the actual image aspect ratio.
         cam_aspect = self.IMG_RES[0] / self.IMG_RES[1]  # width / height
-        hfov_rad = np.deg2rad(90.0)
+        hfov_rad = np.deg2rad(float(SENSOR_CAMERA_HFOV))
         vfov_deg = float(np.rad2deg(2.0 * np.arctan(np.tan(hfov_rad / 2.0) / cam_aspect)))
         DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=vfov_deg,
                                                       aspect=cam_aspect,
