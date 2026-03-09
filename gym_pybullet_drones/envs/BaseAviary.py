@@ -101,8 +101,12 @@ class BaseAviary(gym.Env):
         self.OUTPUT_FOLDER = output_folder
         self.CEILING_HEIGHT = ceiling_height if ceiling_height and ceiling_height > 0 else None
         self.CEILING_ID = None  # Will be set if ceiling is added
+        self.CEILING_TILE_IDS = []
+        self.FLOOR_ID = None
+        self.FLOOR_TILE_IDS = []
         # For 5-wall setup (4 outer walls + 1 center wall), wall_x_offset is ignored - walls are positioned at ±room_size/2 and x=0
         self.ROOM_SIZE = 15.0  # 15m × 15m room (each wall is 15m long)
+        self.CENTER_WALL_WINDOW_SIZE = 1.0  # Default window size (square, meters)
         self.WALL_CUBE_IDS = []  # Store outer wall cube IDs (4 walls: North, South, East, West)
         self.CENTER_WALL_CUBE_IDS = []  # Store center wall cube IDs (1 wall at x=0)
         self.CENTER_WALL_X_POSITION = None  # Track center wall x-position (None if not created yet)
@@ -1549,7 +1553,7 @@ class BaseAviary(gym.Env):
         for _ in range(10):
             p.stepSimulation(physicsClientId=self.CLIENT)
     
-    def _addCenterWall(self, x_position: float = 0.0, window_position: list = None):
+    def _addCenterWall(self, x_position: float = 0.0, window_position: list = None, window_size: float = 1.0):
         """Add center wall that splits the room into two halves (at specified x position, extends in y-direction).
 
         Uses 5m-wide vertical cubes to avoid PyBullet's raycast issues with very large shapes.
@@ -1582,7 +1586,7 @@ class BaseAviary(gym.Env):
         # Window parameters (if window exists)
         window_y_center = None
         window_z_center = None
-        window_half_size = 0.5  # 1m × 1m window, half-size is 0.5m
+        window_half_size = max(float(window_size), 0.05) / 2.0
         if window_position is not None:
             window_y_center = window_position[0]  # y position of window center
             window_z_center = window_position[1]  # z position of window center
@@ -1700,6 +1704,7 @@ class BaseAviary(gym.Env):
         # Store window position if provided (for task logic, wall remains solid)
         if window_position is not None:
             self.CENTER_WALL_WINDOW_POSITION = window_position
+        self.CENTER_WALL_WINDOW_SIZE = max(float(window_size), 0.05)
         
         # Step simulation to ensure collision shapes are initialized
         for _ in range(10):
@@ -1712,6 +1717,43 @@ class BaseAviary(gym.Env):
             p.removeBody(cube_id, physicsClientId=self.CLIENT)
         self.CENTER_WALL_CUBE_IDS = []
         self.CENTER_WALL_X_POSITION = None
+        self.CENTER_WALL_WINDOW_POSITION = None
+
+    def _removeOuterWalls(self):
+        """Remove all outer wall cubes from the simulation."""
+        for cube_id in self.WALL_CUBE_IDS:
+            p.removeBody(cube_id, physicsClientId=self.CLIENT)
+        self.WALL_CUBE_IDS = []
+        self.WALL_ID = None
+
+    def _removeCeiling(self):
+        """Remove all ceiling tiles from the simulation."""
+        for tile_id in getattr(self, 'CEILING_TILE_IDS', []):
+            p.removeBody(tile_id, physicsClientId=self.CLIENT)
+        self.CEILING_TILE_IDS = []
+        self.CEILING_ID = None
+
+    def _removeFloor(self):
+        """Remove all floor tiles from the simulation."""
+        for tile_id in getattr(self, 'FLOOR_TILE_IDS', []):
+            p.removeBody(tile_id, physicsClientId=self.CLIENT)
+        self.FLOOR_TILE_IDS = []
+        self.FLOOR_ID = None
+
+    def _rebuildRoomGeometry(self, room_size: float, ceiling_height: float):
+        """Recreate floor, ceiling, and outer walls with updated geometry."""
+        self.ROOM_SIZE = float(room_size)
+        self.CEILING_HEIGHT = float(ceiling_height) if ceiling_height and ceiling_height > 0 else None
+
+        self._removeCenterWall()
+        self._removeOuterWalls()
+        self._removeCeiling()
+        self._removeFloor()
+
+        if self.CEILING_HEIGHT is not None:
+            self._addFloor()
+            self._addCeiling()
+            self._addOuterWalls()
     
     ################################################################################
     
