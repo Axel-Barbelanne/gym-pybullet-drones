@@ -14,6 +14,24 @@ import pybullet_data
 import gymnasium as gym
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
 
+try:
+    from constants.sensor_constants import (
+        CAMERA_HFOV,
+        CAMERA_IMAGE_HEIGHT,
+        CAMERA_IMAGE_WIDTH,
+        LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG,
+        LIDAR3D_MAX_RANGE_M,
+        LIDAR3D_VERTICAL_NUM_RAYS,
+    )
+except Exception:
+    # Keep legacy defaults when the host project constants are unavailable.
+    CAMERA_HFOV = 90.0
+    CAMERA_IMAGE_WIDTH = 64
+    CAMERA_IMAGE_HEIGHT = 48
+    LIDAR3D_MAX_RANGE_M = 5.0
+    LIDAR3D_VERTICAL_NUM_RAYS = 16
+    LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG = 4.0
+
 
 class BaseAviary(gym.Env):
     """Base class for "drone aviary" Gym environments."""
@@ -157,18 +175,18 @@ class BaseAviary(gym.Env):
         self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
         self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
         # 3D LiDAR constants - Polar Range Image Representation
-        self.LIDAR3D_MAX_RANGE = 5.0  # Maximum detection range in meters
-        self.LIDAR3D_NUM_BEAMS = 16  # Vertical beams (elevation channels) for range image
-        self.LIDAR3D_NUM_BINS = 90   # Horizontal bins (azimuth channels) for range image
+        self.LIDAR3D_MAX_RANGE = float(LIDAR3D_MAX_RANGE_M)  # Maximum detection range in meters
+        self.LIDAR3D_NUM_BEAMS = int(LIDAR3D_VERTICAL_NUM_RAYS)  # Vertical beams (elevation channels)
+        self.LIDAR3D_NUM_BINS = max(1, int(round(360.0 / float(LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG))))
         self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
         self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere upward: 0 to +90)
         # Computed resolutions based on fixed beam/bin configuration
-        self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / (self.LIDAR3D_NUM_BEAMS - 1)  # ~6° per beam
+        self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / max(1, (self.LIDAR3D_NUM_BEAMS - 1))
         self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS  # 4° per bin
         self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
         self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
         if self.VISION_ATTR:
-            self.IMG_RES = np.array([64, 48])
+            self.IMG_RES = np.array([int(CAMERA_IMAGE_WIDTH), int(CAMERA_IMAGE_HEIGHT)])
             self.IMG_FRAME_PER_SEC = 24
             self.IMG_CAPTURE_FREQ = int(self.PYB_FREQ/self.IMG_FRAME_PER_SEC)
             self.rgb = np.zeros(((self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0], 4)))
@@ -641,12 +659,9 @@ class BaseAviary(gym.Env):
                                              cameraUpVector=[0, 0, 1],
                                              physicsClientId=self.CLIENT
                                              )
-        # 90° horizontal FOV with correct aspect ratio for 64x48 resolution.
-        # PyBullet expects vertical FOV, so derive it:
-        #   vfov = 2 * atan(tan(hfov/2) / aspect)
-        # With hfov=90° and aspect=64/48=1.333 → vfov ≈ 73.74°
+        # Use configured horizontal FOV and derive matching vertical FOV.
         cam_aspect = self.IMG_RES[0] / self.IMG_RES[1]  # width / height
-        hfov_rad = np.deg2rad(90.0)
+        hfov_rad = np.deg2rad(float(CAMERA_HFOV))
         vfov_deg = float(np.rad2deg(2.0 * np.arctan(np.tan(hfov_rad / 2.0) / cam_aspect)))
         DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=vfov_deg,
                                                       aspect=cam_aspect,
@@ -886,13 +901,19 @@ class BaseAviary(gym.Env):
         # Update collision detection before raycasting
         p.performCollisionDetection(physicsClientId=self.CLIENT)
         
-        # Raycast returns closest hit per ray
-        ray_hits = p.rayTestBatch(
-            rayFromPositions=ray_from.tolist(),
-            rayToPositions=ray_to.tolist(),
+        # Raycast returns closest hit per ray.
+        # PyBullet has an internal max batch size, so cast in chunks.
+        max_batch_size = 16384
+        ray_hits = []
+        for start in range(0, total_rays, max_batch_size):
+            end = min(start + max_batch_size, total_rays)
+            batch_hits = p.rayTestBatch(
+                rayFromPositions=ray_from[start:end].tolist(),
+                rayToPositions=ray_to[start:end].tolist(),
             parentObjectUniqueId=-1,  # Test all objects
             physicsClientId=self.CLIENT
         )
+            ray_hits.extend(batch_hits)
         
         #### Build range image from raycast results ####
         # Initialize range image: (H, W, 2)
