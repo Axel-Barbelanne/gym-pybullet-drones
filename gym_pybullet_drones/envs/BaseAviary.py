@@ -1568,6 +1568,53 @@ class BaseAviary(gym.Env):
         # Step simulation to ensure collision shapes are initialized
         for _ in range(10):
             p.stepSimulation(physicsClientId=self.CLIENT)
+
+    def _removeOuterWalls(self):
+        """Remove all outer wall segments from the simulation."""
+        if hasattr(self, 'WALL_CUBE_IDS'):
+            for cube_id in self.WALL_CUBE_IDS:
+                p.removeBody(cube_id, physicsClientId=self.CLIENT)
+            self.WALL_CUBE_IDS = []
+        self.WALL_ID = None
+
+    def _removeFloor(self):
+        """Remove floor tiles from the simulation."""
+        if hasattr(self, 'FLOOR_TILE_IDS'):
+            for tile_id in self.FLOOR_TILE_IDS:
+                p.removeBody(tile_id, physicsClientId=self.CLIENT)
+            self.FLOOR_TILE_IDS = []
+        self.FLOOR_ID = None
+
+    def _removeCeiling(self):
+        """Remove ceiling tiles from the simulation."""
+        if hasattr(self, 'CEILING_TILE_IDS'):
+            for tile_id in self.CEILING_TILE_IDS:
+                p.removeBody(tile_id, physicsClientId=self.CLIENT)
+            self.CEILING_TILE_IDS = []
+        self.CEILING_ID = None
+
+    def _rebuildRoomGeometry(self, room_size: float = None, ceiling_height: float = None):
+        """Rebuild floor/ceiling/outer walls with updated room dimensions.
+
+        Parameters
+        ----------
+        room_size : float, optional
+            New square room side length in meters.
+        ceiling_height : float, optional
+            New ceiling height in meters.
+        """
+        if room_size is not None:
+            self.ROOM_SIZE = float(room_size)
+        if ceiling_height is not None:
+            self.CEILING_HEIGHT = float(ceiling_height)
+
+        self._removeOuterWalls()
+        self._removeFloor()
+        self._removeCeiling()
+
+        self._addFloor()
+        self._addCeiling()
+        self._addOuterWalls()
     
     def _addCenterWall(self, x_position: float = 0.0, window_position: list = None):
         """Add center wall that splits the room into two halves (at specified x position, extends in y-direction).
