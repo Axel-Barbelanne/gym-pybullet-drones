@@ -1921,7 +1921,13 @@ class BaseAviary(gym.Env):
             self.WINDOW_IDS = []
 
         half = window_size / 2.0
-        thin = 0.005
+        # Place the window marker so it spans the full wall thickness.
+        # `window_positions` are generated on the *inner* wall face, with an
+        # inward-pointing normal. To cover the wall volume, we shift the marker
+        # outward by half the wall thickness and make its thickness equal to
+        # `self.WALL_THICKNESS`.
+        thin = self.WALL_THICKNESS / 2.0
+        wall_half_t = thin
 
         for win_info in window_positions:
             wall = win_info['wall']
@@ -1929,9 +1935,9 @@ class BaseAviary(gym.Env):
             normal = win_info['normal']
 
             vis_pos = [
-                pos[0] + normal[0] * wall_offset,
-                pos[1] + normal[1] * wall_offset,
-                pos[2] + normal[2] * wall_offset,
+                pos[0] + normal[0] * (wall_offset - wall_half_t),
+                pos[1] + normal[1] * (wall_offset - wall_half_t),
+                pos[2] + normal[2] * (wall_offset - wall_half_t),
             ]
 
             if wall in ('north', 'south'):
