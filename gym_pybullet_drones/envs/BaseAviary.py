@@ -1896,54 +1896,221 @@ class BaseAviary(gym.Env):
                 p.removeBody(patch_id, physicsClientId=self.CLIENT)
             self.PATCH_IDS = []
 
+    def _addOuterWallsWithWindowHoles(self, window_positions: list, window_size: float):
+        """Add outer walls with square window holes carved through.
+
+        `window_positions` follows Simulation's convention:
+          - wall in {'north','south','east','west'}
+          - position is window center on the inner wall face
+          - normal points inward
+
+        The hole is an axis-aligned rectangle in the wall cross-section
+        (tangent axis x/y and z). The wall is carved through its full thickness.
+        """
+        wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
+        room_size = float(self.ROOM_SIZE)
+        wall_position = room_size / 2.0
+        wall_thickness = float(self.WALL_THICKNESS)
+        half_win = float(window_size) / 2.0
+
+        per_wall = {'north': [], 'south': [], 'east': [], 'west': []}
+        for w in window_positions or []:
+            wall = w.get('wall')
+            if wall in per_wall:
+                per_wall[wall].append(w)
+
+        self.WALL_CUBE_IDS = []
+        self.WALL_ID = None
+
+        wall_rgba = [0.8, 0.2, 0.2, 1.0]  # Outer walls are red
+
+        def _unique_sorted(vals):
+            arr = np.array(vals, dtype=float)
+            arr = np.unique(np.round(arr, 6))
+            arr.sort()
+            return arr.tolist()
+
+        for wall in ('north', 'south', 'east', 'west'):
+            wins = per_wall[wall]
+
+            # Cross-section axes:
+            # - north/south: x (tangent) and z
+            # - east/west: y (tangent) and z
+            edge_min = -wall_position
+            edge_max = wall_position
+
+            win_rects = []  # (t0, t1, z0, z1)
+            tang_bounds = [edge_min, edge_max]
+            z_bounds = [0.0, wall_height]
+
+            if wall in ('north', 'south'):
+                for w in wins:
+                    x_mid, _, z_mid = w['position']
+                    t0, t1 = x_mid - half_win, x_mid + half_win
+                    z0, z1 = z_mid - half_win, z_mid + half_win
+                    t0 = max(edge_min, t0)
+                    t1 = min(edge_max, t1)
+                    z0 = max(0.0, z0)
+                    z1 = min(wall_height, z1)
+                    if (t1 - t0) <= 1e-6 or (z1 - z0) <= 1e-6:
+                        continue
+                    win_rects.append((t0, t1, z0, z1))
+                    tang_bounds.extend([t0, t1])
+                    z_bounds.extend([z0, z1])
+                tang_bounds = _unique_sorted(tang_bounds)
+                z_bounds = _unique_sorted(z_bounds)
+
+                cy = wall_position if wall == 'north' else -wall_position
+
+                for ti in range(len(tang_bounds) - 1):
+                    t0, t1 = tang_bounds[ti], tang_bounds[ti + 1]
+                    if (t1 - t0) <= 1e-6:
+                        continue
+                    t_mid = (t0 + t1) / 2.0
+                    for zi in range(len(z_bounds) - 1):
+                        z0, z1 = z_bounds[zi], z_bounds[zi + 1]
+                        if (z1 - z0) <= 1e-6:
+                            continue
+                        z_mid = (z0 + z1) / 2.0
+
+                        covered = False
+                        for (wt0, wt1, wz0, wz1) in win_rects:
+                            if (wt0 <= t_mid <= wt1) and (wz0 <= z_mid <= wz1):
+                                covered = True
+                                break
+                        if covered:
+                            continue
+
+                        cube_half_extents = [(t1 - t0) / 2.0, wall_thickness / 2.0, (z1 - z0) / 2.0]
+                        cube_collision = p.createCollisionShape(
+                            p.GEOM_BOX,
+                            halfExtents=cube_half_extents,
+                            physicsClientId=self.CLIENT,
+                        )
+                        cube_visual = p.createVisualShape(
+                            p.GEOM_BOX,
+                            halfExtents=cube_half_extents,
+                            rgbaColor=wall_rgba,
+                            physicsClientId=self.CLIENT,
+                        )
+                        center_pos = [t_mid, cy, z_mid]
+                        cube_id = p.createMultiBody(
+                            baseMass=0,
+                            baseCollisionShapeIndex=cube_collision,
+                            baseVisualShapeIndex=cube_visual,
+                            basePosition=center_pos,
+                            physicsClientId=self.CLIENT,
+                        )
+                        self.WALL_CUBE_IDS.append(cube_id)
+                        if self.WALL_ID is None:
+                            self.WALL_ID = cube_id
+            else:
+                for w in wins:
+                    _, y_mid, z_mid = w['position']
+                    t0, t1 = y_mid - half_win, y_mid + half_win
+                    z0, z1 = z_mid - half_win, z_mid + half_win
+                    t0 = max(edge_min, t0)
+                    t1 = min(edge_max, t1)
+                    z0 = max(0.0, z0)
+                    z1 = min(wall_height, z1)
+                    if (t1 - t0) <= 1e-6 or (z1 - z0) <= 1e-6:
+                        continue
+                    win_rects.append((t0, t1, z0, z1))
+                    tang_bounds.extend([t0, t1])
+                    z_bounds.extend([z0, z1])
+                tang_bounds = _unique_sorted(tang_bounds)
+                z_bounds = _unique_sorted(z_bounds)
+
+                cx = wall_position if wall == 'east' else -wall_position
+
+                for ti in range(len(tang_bounds) - 1):
+                    t0, t1 = tang_bounds[ti], tang_bounds[ti + 1]
+                    if (t1 - t0) <= 1e-6:
+                        continue
+                    t_mid = (t0 + t1) / 2.0
+                    for zi in range(len(z_bounds) - 1):
+                        z0, z1 = z_bounds[zi], z_bounds[zi + 1]
+                        if (z1 - z0) <= 1e-6:
+                            continue
+                        z_mid = (z0 + z1) / 2.0
+
+                        covered = False
+                        for (wt0, wt1, wz0, wz1) in win_rects:
+                            if (wt0 <= t_mid <= wt1) and (wz0 <= z_mid <= wz1):
+                                covered = True
+                                break
+                        if covered:
+                            continue
+
+                        cube_half_extents = [wall_thickness / 2.0, (t1 - t0) / 2.0, (z1 - z0) / 2.0]
+                        cube_collision = p.createCollisionShape(
+                            p.GEOM_BOX,
+                            halfExtents=cube_half_extents,
+                            physicsClientId=self.CLIENT,
+                        )
+                        cube_visual = p.createVisualShape(
+                            p.GEOM_BOX,
+                            halfExtents=cube_half_extents,
+                            rgbaColor=wall_rgba,
+                            physicsClientId=self.CLIENT,
+                        )
+                        center_pos = [cx, t_mid, z_mid]
+                        cube_id = p.createMultiBody(
+                            baseMass=0,
+                            baseCollisionShapeIndex=cube_collision,
+                            baseVisualShapeIndex=cube_visual,
+                            basePosition=center_pos,
+                            physicsClientId=self.CLIENT,
+                        )
+                        self.WALL_CUBE_IDS.append(cube_id)
+                        if self.WALL_ID is None:
+                            self.WALL_ID = cube_id
+
+        # Step simulation to ensure collision shapes are initialized.
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+
     def _addWallWindows(self, window_positions: list, window_size: float = 1.0,
                         window_color: list = None, wall_offset: float = 0.01):
-        """Add visual-only window markers on outer walls.
+        """Carve square window holes in outer walls + add translucent markers.
 
-        Same approach as _addWallPatches: thin visual boxes with no collision
-        shape so LiDAR raycasts pass through them.
-
-        Parameters
-        ----------
-        window_positions : list of dict
-            Each dict: {'wall': str, 'position': [x,y,z], 'normal': [nx,ny,nz]}.
-        window_size : float
-            Side length of the square window marker in metres.
-        window_color : list
-            RGBA colour.  Default is translucent light-blue.
-        wall_offset : float
-            Offset along the inward normal to avoid z-fighting.
+        The wall geometry is rebuilt to create real openings. We additionally
+        create translucent visual markers (no collision) so evaluation code can
+        remove them and value models still see a window-like visual.
         """
         if window_color is None:
             window_color = [0.6, 0.8, 1.0, 0.6]
 
-        if not hasattr(self, 'WINDOW_IDS'):
-            self.WINDOW_IDS = []
+        # Remove any prior markers.
+        if hasattr(self, 'WINDOW_IDS') and self.WINDOW_IDS:
+            for win_id in self.WINDOW_IDS:
+                p.removeBody(win_id, physicsClientId=self.CLIENT)
+        self.WINDOW_IDS = []
 
-        half = window_size / 2.0
-        # Place the window marker so it spans the full wall thickness.
-        # `window_positions` are generated on the *inner* wall face, with an
-        # inward-pointing normal. To cover the wall volume, we shift the marker
-        # outward by half the wall thickness and make its thickness equal to
-        # `self.WALL_THICKNESS`.
-        thin = self.WALL_THICKNESS / 2.0
-        wall_half_t = thin
+        # Rebuild outer walls carving the holes.
+        self._removeOuterWalls()
+        self._addOuterWallsWithWindowHoles(window_positions=window_positions, window_size=window_size)
 
-        for win_info in window_positions:
+        half = float(window_size) / 2.0
+        wall_half_t = float(self.WALL_THICKNESS) / 2.0
+
+        for win_info in window_positions or []:
             wall = win_info['wall']
             pos = win_info['position']
             normal = win_info['normal']
+            n = np.array(normal, dtype=float)
+            p_inner = np.array(pos, dtype=float)
 
-            vis_pos = [
-                pos[0] + normal[0] * (wall_offset - wall_half_t),
-                pos[1] + normal[1] * (wall_offset - wall_half_t),
-                pos[2] + normal[2] * (wall_offset - wall_half_t),
-            ]
+            # Convert inner-face center -> wall mid-thickness center.
+            p_center_mid = p_inner - n * wall_half_t
+            # Small inward nudge to avoid z-fighting with the newly cut wall.
+            p_center_mid = p_center_mid + n * float(wall_offset)
+            vis_pos = [float(p_center_mid[0]), float(p_center_mid[1]), float(p_center_mid[2])]
 
             if wall in ('north', 'south'):
-                half_extents = [half, thin, half]
+                half_extents = [half, wall_half_t, half]
             else:
-                half_extents = [thin, half, half]
+                half_extents = [wall_half_t, half, half]
 
             vis_shape = p.createVisualShape(
                 p.GEOM_BOX,
@@ -1961,11 +2128,15 @@ class BaseAviary(gym.Env):
             self.WINDOW_IDS.append(win_id)
 
     def _removeWallWindows(self):
-        """Remove all wall window markers from the simulation."""
-        if hasattr(self, 'WINDOW_IDS'):
+        """Remove window markers and rebuild solid outer walls."""
+        if hasattr(self, 'WINDOW_IDS') and self.WINDOW_IDS:
             for win_id in self.WINDOW_IDS:
                 p.removeBody(win_id, physicsClientId=self.CLIENT)
-            self.WINDOW_IDS = []
+        self.WINDOW_IDS = []
+
+        # Restore solid walls (no cutouts).
+        self._removeOuterWalls()
+        self._addOuterWalls()
 
     ################################################################################
     
