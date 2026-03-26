@@ -106,6 +106,13 @@ class BaseAviary(gym.Env):
         self.FLOOR_TILE_IDS = []
         # For 5-wall setup (4 outer walls + 1 center wall), wall_x_offset is ignored - walls are positioned at ±room_size/2 and x=0
         self.ROOM_SIZE = 15.0  # 15m × 15m room (each wall is 15m long)
+        # Wall thickness must match the project `constants/sim_constants.WALL_THICKNESS`.
+        # Fallback to 0.2m if importing constants fails (e.g., unusual runtime contexts).
+        try:
+            from constants.sim_constants import WALL_THICKNESS as _PROJECT_WALL_THICKNESS
+            self.WALL_THICKNESS = float(_PROJECT_WALL_THICKNESS)
+        except Exception:
+            self.WALL_THICKNESS = 0.2
         self.CENTER_WALL_WINDOW_SIZE = 1.0  # Default window size (square, meters)
         self.WALL_CUBE_IDS = []  # Store outer wall cube IDs (4 walls: North, South, East, West)
         self.CENTER_WALL_CUBE_IDS = []  # Store center wall cube IDs (1 wall at x=0)
@@ -1486,13 +1493,15 @@ class BaseAviary(gym.Env):
         room_size = self.ROOM_SIZE  # 15m × 15m room
         wall_position = room_size / 2  # Walls at ±7.5m
         
-        # Create wall from 5m-wide cubes (optimal for PyBullet)
-        cube_length = 5.0  # Each cube segment is 5m long
+        # Create wall from cuboid segments (keeps raycasts stable).
+        cube_length_max = 5.0  # Upper bound on each segment length (meters)
         cube_height = wall_height  # Full height (avoids vertical seams)
-        wall_thickness = 0.5  # Wall thickness
+        wall_thickness = self.WALL_THICKNESS
         
-        # Calculate number of cubes needed per wall (15m / 5m = 3 cubes per wall)
-        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length)))
+        # Calculate number of cubes needed per wall and adjust segment length
+        # so the wall exactly spans [-room_size/2, +room_size/2].
+        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length_max)))
+        cube_length = room_size / num_cubes_per_wall
         
         # Store outer wall cube IDs
         self.WALL_CUBE_IDS = []
@@ -1534,7 +1543,7 @@ class BaseAviary(gym.Env):
                 cube_visual = p.createVisualShape(
                     p.GEOM_BOX,
                     halfExtents=cube_half_extents,
-                    rgbaColor=[0.2, 0.4, 0.8, 1.0],  # Blue (outer walls)
+                    rgbaColor=[0.8, 0.2, 0.2, 1.0],  # Red (outer walls)
                     physicsClientId=self.CLIENT
                 )
                 cube_id = p.createMultiBody(
@@ -1569,13 +1578,15 @@ class BaseAviary(gym.Env):
         wall_height = self.CEILING_HEIGHT if self.CEILING_HEIGHT is not None else 10.0
         room_size = self.ROOM_SIZE  # 15m × 15m room
         
-        # Create wall from 5m-wide cubes (optimal for PyBullet)
-        cube_length = 5.0  # Each cube segment is 5m long
+        # Create wall from cuboid segments (keeps raycasts stable).
+        cube_length_max = 5.0  # Upper bound on each segment length (meters)
         cube_height = wall_height  # Full height (avoids vertical seams)
-        wall_thickness = 0.5  # Wall thickness
+        wall_thickness = self.WALL_THICKNESS  # Wall thickness
         
-        # Calculate number of cubes needed per wall (15m / 5m = 3 cubes per wall)
-        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length)))
+        # Calculate number of cubes needed per wall and adjust segment length
+        # so the wall exactly spans [-room_size/2, +room_size/2].
+        num_cubes_per_wall = max(1, int(np.ceil(room_size / cube_length_max)))
+        cube_length = room_size / num_cubes_per_wall
         
         # Store center wall cube IDs
         self.CENTER_WALL_CUBE_IDS = []
@@ -1884,6 +1895,71 @@ class BaseAviary(gym.Env):
             for patch_id in self.PATCH_IDS:
                 p.removeBody(patch_id, physicsClientId=self.CLIENT)
             self.PATCH_IDS = []
+
+    def _addWallWindows(self, window_positions: list, window_size: float = 1.0,
+                        window_color: list = None, wall_offset: float = 0.01):
+        """Add visual-only window markers on outer walls.
+
+        Same approach as _addWallPatches: thin visual boxes with no collision
+        shape so LiDAR raycasts pass through them.
+
+        Parameters
+        ----------
+        window_positions : list of dict
+            Each dict: {'wall': str, 'position': [x,y,z], 'normal': [nx,ny,nz]}.
+        window_size : float
+            Side length of the square window marker in metres.
+        window_color : list
+            RGBA colour.  Default is translucent light-blue.
+        wall_offset : float
+            Offset along the inward normal to avoid z-fighting.
+        """
+        if window_color is None:
+            window_color = [0.6, 0.8, 1.0, 0.6]
+
+        if not hasattr(self, 'WINDOW_IDS'):
+            self.WINDOW_IDS = []
+
+        half = window_size / 2.0
+        thin = 0.005
+
+        for win_info in window_positions:
+            wall = win_info['wall']
+            pos = win_info['position']
+            normal = win_info['normal']
+
+            vis_pos = [
+                pos[0] + normal[0] * wall_offset,
+                pos[1] + normal[1] * wall_offset,
+                pos[2] + normal[2] * wall_offset,
+            ]
+
+            if wall in ('north', 'south'):
+                half_extents = [half, thin, half]
+            else:
+                half_extents = [thin, half, half]
+
+            vis_shape = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=half_extents,
+                rgbaColor=window_color,
+                physicsClientId=self.CLIENT,
+            )
+            win_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=-1,
+                baseVisualShapeIndex=vis_shape,
+                basePosition=vis_pos,
+                physicsClientId=self.CLIENT,
+            )
+            self.WINDOW_IDS.append(win_id)
+
+    def _removeWallWindows(self):
+        """Remove all wall window markers from the simulation."""
+        if hasattr(self, 'WINDOW_IDS'):
+            for win_id in self.WINDOW_IDS:
+                p.removeBody(win_id, physicsClientId=self.CLIENT)
+            self.WINDOW_IDS = []
 
     ################################################################################
     
