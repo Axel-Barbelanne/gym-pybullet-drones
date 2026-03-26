@@ -1372,28 +1372,39 @@ class BaseAviary(gym.Env):
 
         """
         ceiling_thickness = 0.3  # Thickness of ceiling tiles
-        tile_size = 5.0  # Each tile is 5m × 5m (optimal for PyBullet)
+        tile_size = 5.0  # Nominal tile edge length (we'll clip edge tiles)
         room_size = self.ROOM_SIZE  # 15m × 15m room
         
-        # Ceiling covers the entire room: x and y from -7.5 to +7.5
+        # Ceiling covers the entire room: x and y from -room_size/2 to +room_size/2
         ceiling_start = -room_size / 2
         ceiling_end = room_size / 2
         
-        # Calculate number of tiles needed (15m / 5m = 3 tiles per side)
+        # Calculate number of tiles needed. We'll clip edge tiles so they don't
+        # extend past room bounds.
         num_tiles = max(1, int(np.ceil(room_size / tile_size)))
-        
-        tile_half_extents = [tile_size / 2, tile_size / 2, ceiling_thickness / 2]
         
         # Store all ceiling tile IDs
         self.CEILING_TILE_IDS = []
         
-        # Create tiles in a grid covering the entire room
+        # Create tiles in a grid covering the entire room (with clipped edge tiles)
         for ix in range(num_tiles):
+            x_left = ceiling_start + ix * tile_size
+            x_right = min(x_left + tile_size, ceiling_end)
+            if x_right <= x_left:
+                continue
+            x_pos = (x_left + x_right) / 2.0
+            x_half = (x_right - x_left) / 2.0
+
             for iy in range(num_tiles):
-                x_pos = ceiling_start + tile_size / 2 + ix * tile_size
-                y_pos = ceiling_start + tile_size / 2 + iy * tile_size
+                y_left = ceiling_start + iy * tile_size
+                y_right = min(y_left + tile_size, ceiling_end)
+                if y_right <= y_left:
+                    continue
+                y_pos = (y_left + y_right) / 2.0
+                y_half = (y_right - y_left) / 2.0
                 z_pos = self.CEILING_HEIGHT + ceiling_thickness / 2
-                
+                tile_half_extents = [x_half, y_half, ceiling_thickness / 2]
+
                 tile_collision = p.createCollisionShape(
                     p.GEOM_BOX,
                     halfExtents=tile_half_extents,
@@ -1431,28 +1442,39 @@ class BaseAviary(gym.Env):
 
         """
         floor_thickness = 0.1  # Thickness of floor tiles (thinner than ceiling)
-        tile_size = 5.0  # Each tile is 5m × 5m (optimal for PyBullet)
+        tile_size = 5.0  # Nominal tile edge length (we'll clip edge tiles)
         room_size = self.ROOM_SIZE  # 15m × 15m room
         
-        # Floor covers the entire room: x and y from -7.5 to +7.5
+        # Floor covers the entire room: x and y from -room_size/2 to +room_size/2
         floor_start = -room_size / 2
         floor_end = room_size / 2
         
-        # Calculate number of tiles needed (15m / 5m = 3 tiles per side)
+        # Calculate number of tiles needed. We'll clip edge tiles so they don't
+        # extend past room bounds.
         num_tiles = max(1, int(np.ceil(room_size / tile_size)))
-        
-        tile_half_extents = [tile_size / 2, tile_size / 2, floor_thickness / 2]
         
         # Store all floor tile IDs
         self.FLOOR_TILE_IDS = []
         
-        # Create tiles in a grid covering the entire room
+        # Create tiles in a grid covering the entire room (with clipped edge tiles)
         for ix in range(num_tiles):
+            x_left = floor_start + ix * tile_size
+            x_right = min(x_left + tile_size, floor_end)
+            if x_right <= x_left:
+                continue
+            x_pos = (x_left + x_right) / 2.0
+            x_half = (x_right - x_left) / 2.0
+
             for iy in range(num_tiles):
-                x_pos = floor_start + tile_size / 2 + ix * tile_size
-                y_pos = floor_start + tile_size / 2 + iy * tile_size
+                y_left = floor_start + iy * tile_size
+                y_right = min(y_left + tile_size, floor_end)
+                if y_right <= y_left:
+                    continue
+                y_pos = (y_left + y_right) / 2.0
+                y_half = (y_right - y_left) / 2.0
                 z_pos = floor_thickness / 2  # Floor at z=0, with half thickness above
-                
+                tile_half_extents = [x_half, y_half, floor_thickness / 2]
+
                 tile_collision = p.createCollisionShape(
                     p.GEOM_BOX,
                     halfExtents=tile_half_extents,
