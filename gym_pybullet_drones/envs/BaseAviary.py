@@ -2077,55 +2077,31 @@ class BaseAviary(gym.Env):
         The wall geometry is rebuilt to create real openings. We additionally
         create translucent visual markers (no collision) so evaluation code can
         remove them and value models still see a window-like visual.
+
+        Note: this project now requires window openings to be true holes with
+        no visible/tinted “glass” plane. We therefore DO NOT create any
+        extra window marker bodies; completion is tracked via task phase
+        indices and `window_positions`, while the wall cutouts are the source
+        of truth for geometry and LiDAR.
         """
         if window_color is None:
             window_color = [0.6, 0.8, 1.0, 0.6]
 
-        # Remove any prior markers.
+        # Remove any prior markers (if any existed from older runs).
         if hasattr(self, 'WINDOW_IDS') and self.WINDOW_IDS:
             for win_id in self.WINDOW_IDS:
-                p.removeBody(win_id, physicsClientId=self.CLIENT)
+                try:
+                    p.removeBody(win_id, physicsClientId=self.CLIENT)
+                except Exception:
+                    pass
+        # No visible marker bodies: keep empty for "no tinted plane" requirement.
         self.WINDOW_IDS = []
 
         # Rebuild outer walls carving the holes.
         self._removeOuterWalls()
         self._addOuterWallsWithWindowHoles(window_positions=window_positions, window_size=window_size)
 
-        half = float(window_size) / 2.0
-        wall_half_t = float(self.WALL_THICKNESS) / 2.0
-
-        for win_info in window_positions or []:
-            wall = win_info['wall']
-            pos = win_info['position']
-            normal = win_info['normal']
-            n = np.array(normal, dtype=float)
-            p_inner = np.array(pos, dtype=float)
-
-            # Convert inner-face center -> wall mid-thickness center.
-            p_center_mid = p_inner - n * wall_half_t
-            # Small inward nudge to avoid z-fighting with the newly cut wall.
-            p_center_mid = p_center_mid + n * float(wall_offset)
-            vis_pos = [float(p_center_mid[0]), float(p_center_mid[1]), float(p_center_mid[2])]
-
-            if wall in ('north', 'south'):
-                half_extents = [half, wall_half_t, half]
-            else:
-                half_extents = [wall_half_t, half, half]
-
-            vis_shape = p.createVisualShape(
-                p.GEOM_BOX,
-                halfExtents=half_extents,
-                rgbaColor=window_color,
-                physicsClientId=self.CLIENT,
-            )
-            win_id = p.createMultiBody(
-                baseMass=0,
-                baseCollisionShapeIndex=-1,
-                baseVisualShapeIndex=vis_shape,
-                basePosition=vis_pos,
-                physicsClientId=self.CLIENT,
-            )
-            self.WINDOW_IDS.append(win_id)
+        # Intentionally no marker visuals/collision.
 
     def _removeWallWindows(self):
         """Remove window markers and rebuild solid outer walls."""
