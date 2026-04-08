@@ -47,9 +47,14 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             "lightswitch_panel_size": 0.25,
             "lightswitch_panel_thickness": 0.05,
             "lightswitch_panel_tilt_deg": 45.0,
+            "lightswitch_panel_forward_offset": 0.088,
             "lightswitch_tripod_height": 1.30,
             "lightswitch_leg_diameter": 0.05,
             "lightswitch_leg_tilt_deg": 25.0,
+            "lightswitch_back_strut_diameter": 0.05,
+            "lightswitch_back_strut_length": 0.50,
+            "lightswitch_connection_offset_y": 0.0,
+            "lightswitch_connection_offset_z": 0.0,
             "lightswitch_cube_size": 0.07,
             "lightswitch_cube_depth": 0.05,
             "lightswitch_cube_bottom_offset": 0.03,
@@ -123,6 +128,24 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             "whiteboard_yaw": float(rng.uniform(0.0, 2.0 * np.pi)),
             "lightswitch_pos_xy": EmptyWallWhiteboardAviary._sample_xy_in_radius(rng, radius=5.0),
             "lightswitch_yaw": float(rng.uniform(0.0, 2.0 * np.pi)),
+            "lightswitch_panel_size": float(rng.uniform(0.20, 0.35)),
+            "lightswitch_panel_thickness": float(rng.uniform(0.035, 0.070)),
+            "lightswitch_panel_tilt_deg": float(rng.uniform(30.0, 60.0)),
+            "lightswitch_panel_forward_offset": float(rng.uniform(0.04, 0.16)),
+            "lightswitch_tripod_height": float(rng.uniform(1.00, 1.60)),
+            "lightswitch_leg_diameter": float(rng.uniform(0.03, 0.07)),
+            # Same tilt for all three legs; wider range for domain randomization.
+            "lightswitch_leg_tilt_deg": float(rng.uniform(7.0, 52.0)),
+            "lightswitch_back_strut_diameter": float(rng.uniform(0.035, 0.08)),
+            "lightswitch_back_strut_length": float(rng.uniform(0.30, 0.75)),
+            "lightswitch_connection_offset_y": float(rng.uniform(-0.04, 0.04)),
+            "lightswitch_connection_offset_z": float(rng.uniform(-0.04, 0.04)),
+            "lightswitch_cube_size": float(rng.uniform(0.05, 0.10)),
+            "lightswitch_cube_depth": float(rng.uniform(0.03, 0.08)),
+            "lightswitch_cube_bottom_offset": float(rng.uniform(0.01, 0.09)),
+            "lightswitch_cone_diameter": float(rng.uniform(0.035, 0.08)),
+            "lightswitch_cone_depth": float(rng.uniform(0.06, 0.16)),
+            "lightswitch_cone_top_offset": float(rng.uniform(0.01, 0.09)),
         }
 
     def set_scene_configuration(self, **kwargs):
@@ -355,9 +378,14 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             panel_size = float(cfg["lightswitch_panel_size"])
             panel_thickness = float(cfg["lightswitch_panel_thickness"])
             panel_tilt = np.deg2rad(float(cfg["lightswitch_panel_tilt_deg"]))
+            panel_forward_offset = float(cfg["lightswitch_panel_forward_offset"])
             tripod_height = float(cfg["lightswitch_tripod_height"])
             leg_radius = float(cfg["lightswitch_leg_diameter"]) / 2.0
             leg_tilt = np.deg2rad(float(cfg["lightswitch_leg_tilt_deg"]))
+            back_strut_radius = float(cfg["lightswitch_back_strut_diameter"]) / 2.0
+            back_strut_length = float(cfg["lightswitch_back_strut_length"])
+            connection_offset_y = float(cfg["lightswitch_connection_offset_y"])
+            connection_offset_z = float(cfg["lightswitch_connection_offset_z"])
 
             cube_size = float(cfg["lightswitch_cube_size"])
             cube_depth = float(cfg["lightswitch_cube_depth"])
@@ -365,6 +393,29 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             cone_radius = float(cfg["lightswitch_cone_diameter"]) / 2.0
             cone_depth = float(cfg["lightswitch_cone_depth"])
             cone_top_offset = float(cfg["lightswitch_cone_top_offset"])
+
+            # Strong randomization with coherence guards.
+            panel_size = max(panel_size, 0.16)
+            panel_thickness = float(np.clip(panel_thickness, 0.015, panel_size * 0.40))
+            tripod_height = max(tripod_height, 0.35)
+            leg_radius = max(leg_radius, 0.005)
+            leg_tilt = float(np.clip(leg_tilt, np.deg2rad(5.0), np.deg2rad(55.0)))
+            back_strut_radius = max(back_strut_radius, 0.005)
+            back_strut_length = max(back_strut_length, 0.05)
+            cube_size = float(np.clip(cube_size, 0.03, panel_size * 0.55))
+            cube_depth = float(np.clip(cube_depth, 0.015, 0.20))
+            cone_radius = float(np.clip(cone_radius, 0.01, panel_size * 0.25))
+            cone_depth = float(np.clip(cone_depth, 0.03, 0.25))
+            max_conn_y = 0.30 * panel_size
+            max_conn_z = 0.30 * panel_size
+            connection_offset_y = float(np.clip(connection_offset_y, -max_conn_y, max_conn_y))
+            connection_offset_z = float(np.clip(connection_offset_z, -max_conn_z, max_conn_z))
+            cube_bottom_offset = float(
+                np.clip(cube_bottom_offset, 0.0, max(0.0, panel_size - cube_size))
+            )
+            cone_top_offset = float(
+                np.clip(cone_top_offset, 0.0, max(0.0, panel_size - 2.0 * cone_radius))
+            )
 
             panel_center_z = tripod_height + (panel_size / 2.0) * np.cos(panel_tilt)
             panel_collision = p.createCollisionShape(
@@ -379,22 +430,32 @@ class EmptyWallWhiteboardAviary(BaseAviary):
                 physicsClientId=self.CLIENT,
             )
             panel_quat = p.getQuaternionFromEuler([0.0, panel_tilt, yaw])
+            rot_panel = np.array(p.getMatrixFromQuaternion(panel_quat), dtype=np.float64).reshape(3, 3)
+            # "Forward" is the plate normal projected on the floor plane (XY only).
+            panel_forward_xy = rot_panel @ np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            panel_forward_xy[2] = 0.0
+            norm_xy = max(np.linalg.norm(panel_forward_xy), 1e-9)
+            panel_forward_xy = panel_forward_xy / norm_xy
+            # Tripod connection reference (unshifted); plate is shifted forward relative to this.
+            tripod_panel_origin = np.array(
+                [float(pos_xy[0]), float(pos_xy[1]), float(panel_center_z)],
+                dtype=np.float64,
+            )
+            panel_origin = tripod_panel_origin - panel_forward_offset * panel_forward_xy
             self.LIGHTSWITCH_ID = p.createMultiBody(
                 baseMass=0.0,
                 baseCollisionShapeIndex=panel_collision,
                 baseVisualShapeIndex=panel_visual,
-                basePosition=[float(pos_xy[0]), float(pos_xy[1]), float(panel_center_z)],
+                basePosition=panel_origin.tolist(),
                 baseOrientation=panel_quat,
                 physicsClientId=self.CLIENT,
             )
             self.LIGHTSWITCH_PART_IDS.append(int(self.LIGHTSWITCH_ID))
 
-            rot_panel = np.array(p.getMatrixFromQuaternion(panel_quat), dtype=np.float64).reshape(3, 3)
-            panel_origin = np.array([float(pos_xy[0]), float(pos_xy[1]), float(panel_center_z)], dtype=np.float64)
             cube_center_local = np.array(
                 [
                     -panel_thickness / 2.0 - cube_depth / 2.0,
-                    0.0,
+                    connection_offset_y,
                     -panel_size / 2.0 + cube_bottom_offset + cube_size / 2.0,
                 ],
                 dtype=np.float64,
@@ -424,7 +485,7 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             cone_center_local = np.array(
                 [
                     -panel_thickness / 2.0 - cone_depth / 2.0,
-                    0.0,
+                    connection_offset_y,
                     panel_size / 2.0 - cone_top_offset - cone_radius,
                 ],
                 dtype=np.float64,
@@ -461,9 +522,52 @@ class EmptyWallWhiteboardAviary(BaseAviary):
             )
             self.LIGHTSWITCH_PART_IDS.append(int(cone_id))
 
-            leg_drop = tripod_height
-            leg_length = leg_drop / max(np.cos(leg_tilt), 1e-6)
-            top_anchor = panel_origin + rot_panel @ np.array([0.0, 0.0, -panel_size / 2.0], dtype=np.float64)
+            # Keep rear support aligned with the tripod connection center.
+            top_anchor = tripod_panel_origin + rot_panel @ np.array(
+                [0.0, connection_offset_y, -panel_size / 2.0 + connection_offset_z],
+                dtype=np.float64,
+            )
+            back_anchor = tripod_panel_origin + rot_panel @ np.array(
+                [-panel_thickness / 2.0, connection_offset_y, connection_offset_z],
+                dtype=np.float64,
+            )
+            # Vertical strut with top touching the plate underside and extending
+            # an additional configured length downward.
+            underside_z = float(back_anchor[2])
+            strut_top = np.array(
+                [float(top_anchor[0]), float(top_anchor[1]), underside_z],
+                dtype=np.float64,
+            )
+            strut_bottom = np.array(
+                [float(top_anchor[0]), float(top_anchor[1]), underside_z - back_strut_length],
+                dtype=np.float64,
+            )
+            back_strut_center = 0.5 * (strut_bottom + strut_top)
+            back_strut_collision = p.createCollisionShape(
+                p.GEOM_CYLINDER,
+                radius=back_strut_radius,
+                height=back_strut_length,
+                physicsClientId=self.CLIENT,
+            )
+            back_strut_visual = p.createVisualShape(
+                p.GEOM_CYLINDER,
+                radius=back_strut_radius,
+                length=back_strut_length,
+                rgbaColor=[0.05, 0.05, 0.05, 1.0],
+                physicsClientId=self.CLIENT,
+            )
+            back_strut_id = p.createMultiBody(
+                baseMass=0.0,
+                baseCollisionShapeIndex=back_strut_collision,
+                baseVisualShapeIndex=back_strut_visual,
+                basePosition=back_strut_center.tolist(),
+                baseOrientation=[0.0, 0.0, 0.0, 1.0],
+                physicsClientId=self.CLIENT,
+            )
+            self.LIGHTSWITCH_PART_IDS.append(int(back_strut_id))
+
+            # Leg axis has vertical component cos(leg_tilt) (down); feet at z=0 => |leg| = top_z / cos(leg_tilt).
+            leg_length = float(top_anchor[2]) / max(np.cos(leg_tilt), 1e-6)
             leg_collision = p.createCollisionShape(
                 p.GEOM_CYLINDER,
                 radius=leg_radius,
@@ -493,16 +597,31 @@ class EmptyWallWhiteboardAviary(BaseAviary):
                 self.LIGHTSWITCH_PART_IDS.append(int(leg_id))
 
     def _getDroneLidarScan3D(self, nth_drone, max_range=None, return_point_cloud=False, return_hit_ids=False):
-        """Return 3D LiDAR scan using a 9.5° forward mount pitch."""
+        """Return 3D LiDAR scan with oversampled ray casting and min-range/max-mask downsampling.
+
+        Casts rays at (num_beams * OS_V, num_bins * OS_H) resolution to match
+        the real RoboSense Airy 96-beam sensor pipeline, then pools each
+        (OS_V x OS_H) block down to one output pixel using:
+          - range: minimum across block (closest surface wins)
+          - hit mask: maximum across block (any hit → output is hit)
+          - body id: id of the closest-range hit in the block
+
+        With LIDAR3D_OVERSAMPLE_V=1 and LIDAR3D_OVERSAMPLE_H=1 this is
+        identical to the original single-resolution implementation.
+        """
         if max_range is None:
             max_range = self.LIDAR3D_MAX_RANGE
 
         num_beams = self.LIDAR3D_NUM_BEAMS
         num_bins = self.LIDAR3D_NUM_BINS
+        os_v = self.LIDAR3D_OVERSAMPLE_V
+        os_h = self.LIDAR3D_OVERSAMPLE_H
+        V_full = num_beams * os_v
+        H_full = num_bins * os_h
 
-        elevation_angles = np.linspace(0, np.deg2rad(self.LIDAR3D_VERTICAL_FOV), num_beams, endpoint=True)
-        azimuth_angles = np.linspace(0, 2 * np.pi, num_bins, endpoint=False)
-        az_grid, el_grid = np.meshgrid(azimuth_angles, elevation_angles, indexing="xy")
+        elevation_angles_full = np.linspace(0, np.deg2rad(self.LIDAR3D_VERTICAL_FOV), V_full, endpoint=True)
+        azimuth_angles_full = np.linspace(0, 2 * np.pi, H_full, endpoint=False)
+        az_grid, el_grid = np.meshgrid(azimuth_angles_full, elevation_angles_full, indexing="xy")
         az_flat = az_grid.flatten()
         el_flat = el_grid.flatten()
 
@@ -533,45 +652,78 @@ class EmptyWallWhiteboardAviary(BaseAviary):
         ray_dirs_local = (pitch_rotation @ ray_dirs_local.T).T
 
         ray_dirs_world = (rot_mat @ ray_dirs_local.T).T
-        total_rays = num_beams * num_bins
+        total_rays = V_full * H_full
         ray_from = np.tile(lidar_origin_world, (total_rays, 1))
         ray_to = ray_from + ray_dirs_world * max_range
 
         p.performCollisionDetection(physicsClientId=self.CLIENT)
-        ray_hits = p.rayTestBatch(
-            rayFromPositions=ray_from.tolist(),
-            rayToPositions=ray_to.tolist(),
-            parentObjectUniqueId=-1,
-            physicsClientId=self.CLIENT,
-        )
 
-        range_image = np.ones((num_beams, num_bins, 2), dtype=np.float32)
-        range_image[:, :, 1] = 0.0
-        hit_body_ids = -1 * np.ones((num_beams, num_bins), dtype=np.int32)
+        # PyBullet caps rayTestBatch at 16384 rays; split into chunks.
+        MAX_RAYS_PER_BATCH = 16384
+        ray_hits = []
+        for start in range(0, total_rays, MAX_RAYS_PER_BATCH):
+            end = min(start + MAX_RAYS_PER_BATCH, total_rays)
+            batch = p.rayTestBatch(
+                rayFromPositions=ray_from[start:end].tolist(),
+                rayToPositions=ray_to[start:end].tolist(),
+                parentObjectUniqueId=-1,
+                physicsClientId=self.CLIENT,
+            )
+            ray_hits.extend(batch)
+
+        # Build full-resolution arrays
+        range_full = np.ones((V_full, H_full), dtype=np.float32)
+        mask_full = np.zeros((V_full, H_full), dtype=np.float32)
+        ids_full = -1 * np.ones((V_full, H_full), dtype=np.int32)
+        drone_id = int(self.DRONE_IDS[nth_drone])
 
         for i, hit in enumerate(ray_hits):
-            e = i // num_bins
-            a = i % num_bins
-            if hit[0] != -1:
-                if hit[0] == int(self.DRONE_IDS[nth_drone]):
-                    range_image[e, a, 0] = 1.0
-                    range_image[e, a, 1] = 0.0
-                else:
-                    hit_distance = hit[2] * max_range
-                    range_image[e, a, 0] = min(hit_distance / max_range, 1.0)
-                    range_image[e, a, 1] = 1.0
-                    hit_body_ids[e, a] = int(hit[0])
-            else:
-                range_image[e, a, 0] = 1.0
-                range_image[e, a, 1] = 0.0
+            e = i // H_full
+            a = i % H_full
+            if hit[0] != -1 and hit[0] != drone_id:
+                hit_distance = hit[2] * max_range
+                range_full[e, a] = min(hit_distance / max_range, 1.0)
+                mask_full[e, a] = 1.0
+                ids_full[e, a] = int(hit[0])
+
+        # ---- Downsample (V_full, H_full) → (num_beams, num_bins) ----
+        if os_v == 1 and os_h == 1:
+            range_out = range_full
+            mask_out = mask_full
+            ids_out = ids_full
+        else:
+            # Range: min per block (closest surface wins)
+            range_4d = range_full.reshape(num_beams, os_v, num_bins, os_h)
+            range_out = range_4d.min(axis=(1, 3))
+
+            # Hit mask: max per block (any hit → 1)
+            mask_4d = mask_full.reshape(num_beams, os_v, num_bins, os_h)
+            mask_out = mask_4d.max(axis=(1, 3))
+
+            # Body IDs: pick the ID of the closest hit in each block.
+            # Set non-hit ranges to inf so argmin ignores them, then index.
+            ids_4d = ids_full.reshape(num_beams, os_v, num_bins, os_h)
+            range_for_argmin = np.where(mask_4d > 0.5, range_4d, np.float32(2.0))
+            # Merge the two intra-block axes → (num_beams, os_v*os_h, num_bins)
+            rfam = range_for_argmin.transpose(0, 2, 1, 3).reshape(num_beams, num_bins, os_v * os_h)
+            best = rfam.argmin(axis=2)  # (num_beams, num_bins)
+            ids_flat = ids_4d.transpose(0, 2, 1, 3).reshape(num_beams, num_bins, os_v * os_h)
+            ids_out = np.take_along_axis(ids_flat, best[..., np.newaxis], axis=2).squeeze(axis=2)
+            # Where the whole block had no hits, reset to -1
+            ids_out[mask_out < 0.5] = -1
+
+        range_image = np.stack([range_out, mask_out], axis=-1).astype(np.float32)
 
         if return_point_cloud:
+            # For visualization, use output-resolution angles
+            elevation_angles_out = np.linspace(0, np.deg2rad(self.LIDAR3D_VERTICAL_FOV), num_beams, endpoint=True)
+            azimuth_angles_out = np.linspace(0, 2 * np.pi, num_bins, endpoint=False)
             hit_points, ranges, ray_angles = self._range_image_to_point_cloud(
-                range_image, elevation_angles, azimuth_angles, max_range, pitch_rotation
+                range_image, elevation_angles_out, azimuth_angles_out, max_range, pitch_rotation
             )
             if return_hit_ids:
-                return range_image, hit_points, ranges, ray_angles, hit_body_ids
+                return range_image, hit_points, ranges, ray_angles, ids_out
             return range_image, hit_points, ranges, ray_angles
         if return_hit_ids:
-            return range_image, hit_body_ids
+            return range_image, ids_out
         return range_image

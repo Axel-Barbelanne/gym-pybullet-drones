@@ -21,6 +21,8 @@ try:
         LIDAR3D_MAX_RANGE_M as SENSOR_LIDAR3D_MAX_RANGE_M,
         LIDAR3D_VERTICAL_NUM_RAYS as SENSOR_LIDAR3D_VERTICAL_NUM_RAYS,
         LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG as SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG,
+        LIDAR3D_OVERSAMPLE_V as SENSOR_LIDAR3D_OVERSAMPLE_V,
+        LIDAR3D_OVERSAMPLE_H as SENSOR_LIDAR3D_OVERSAMPLE_H,
     )
 except Exception:
     # Fallback values keep submodule behavior usable in standalone contexts.
@@ -30,6 +32,8 @@ except Exception:
     SENSOR_LIDAR3D_MAX_RANGE_M = 5.0
     SENSOR_LIDAR3D_VERTICAL_NUM_RAYS = 16
     SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG = 4.0
+    SENSOR_LIDAR3D_OVERSAMPLE_V = 1
+    SENSOR_LIDAR3D_OVERSAMPLE_H = 1
 
 
 class BaseAviary(gym.Env):
@@ -180,6 +184,9 @@ class BaseAviary(gym.Env):
             1,
             int(np.round(self.LIDAR3D_HORIZONTAL_FOV / float(SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG))),
         )
+        # Oversampling: cast more rays then pool to output resolution.
+        self.LIDAR3D_OVERSAMPLE_V = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_V))
+        self.LIDAR3D_OVERSAMPLE_H = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_H))
         # Computed resolutions based on configured beam/bin values.
         self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / (self.LIDAR3D_NUM_BEAMS - 1)  # ~6° per beam
         self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS
