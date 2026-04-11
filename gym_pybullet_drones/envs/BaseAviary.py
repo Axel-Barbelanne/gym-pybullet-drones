@@ -184,7 +184,7 @@ class BaseAviary(gym.Env):
             1,
             int(np.round(self.LIDAR3D_HORIZONTAL_FOV / float(SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG))),
         )
-        # Oversampling: cast more rays then pool to output resolution.
+        # Direct-resolution casting: output bins are cast directly (no pooling).
         self.LIDAR3D_OVERSAMPLE_V = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_V))
         self.LIDAR3D_OVERSAMPLE_H = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_H))
         # Computed resolutions based on configured beam/bin values.
