@@ -18,7 +18,7 @@ _WB_POLE_SIDE = 0.05
 # Minimum centre-to-centre distance between whiteboards (m).
 _WB_MIN_SEPARATION_M = 2.0
 
-# Arena half-side for the hw-demo 8 × 8 square room.
+# Arena half-side for the hw_demo 8 × 8 square room.
 HW_DEMO_HALF_SIDE_M = 4.0
 
 
