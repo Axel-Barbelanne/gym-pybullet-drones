@@ -13,6 +13,27 @@ import pybullet as p
 import pybullet_data
 import gymnasium as gym
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
+try:
+    from constants.sensor_constants import (
+        CAMERA_IMAGE_HEIGHT as SENSOR_CAMERA_IMAGE_HEIGHT,
+        CAMERA_IMAGE_WIDTH as SENSOR_CAMERA_IMAGE_WIDTH,
+        CAMERA_HFOV as SENSOR_CAMERA_HFOV,
+        LIDAR3D_MAX_RANGE_M as SENSOR_LIDAR3D_MAX_RANGE_M,
+        LIDAR3D_VERTICAL_NUM_RAYS as SENSOR_LIDAR3D_VERTICAL_NUM_RAYS,
+        LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG as SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG,
+        LIDAR3D_OVERSAMPLE_V as SENSOR_LIDAR3D_OVERSAMPLE_V,
+        LIDAR3D_OVERSAMPLE_H as SENSOR_LIDAR3D_OVERSAMPLE_H,
+    )
+except Exception:
+    # Fallback values keep submodule behavior usable in standalone contexts.
+    SENSOR_CAMERA_IMAGE_HEIGHT = 48
+    SENSOR_CAMERA_IMAGE_WIDTH = 64
+    SENSOR_CAMERA_HFOV = 90.0
+    SENSOR_LIDAR3D_MAX_RANGE_M = 5.0
+    SENSOR_LIDAR3D_VERTICAL_NUM_RAYS = 16
+    SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG = 4.0
+    SENSOR_LIDAR3D_OVERSAMPLE_V = 1
+    SENSOR_LIDAR3D_OVERSAMPLE_H = 1
 
 
 class BaseAviary(gym.Env):
@@ -117,6 +138,7 @@ class BaseAviary(gym.Env):
         self.WALL_CUBE_IDS = []  # Store outer wall cube IDs (4 walls: North, South, East, West)
         self.CENTER_WALL_CUBE_IDS = []  # Store center wall cube IDs (1 wall at x=0)
         self.CENTER_WALL_X_POSITION = None  # Track center wall x-position (None if not created yet)
+        self.DISTRACTOR_IDS = []  # Store distractor obstacle IDs
         self.WALL_ID = None  # Will be set if walls are added (first outer wall ID for compatibility)
         #### Load the drone properties from the .urdf file #########
         self.M, \
@@ -164,18 +186,25 @@ class BaseAviary(gym.Env):
         self.LIDAR_SCAN_RATE_HZ = 10.0  # Desired scan rate in Hz
         self.LIDAR_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR_SCAN_RATE_HZ)  # Update frequency in control steps
         # 3D LiDAR constants - Polar Range Image Representation
-        self.LIDAR3D_MAX_RANGE = 5.0  # Maximum detection range in meters
-        self.LIDAR3D_NUM_BEAMS = 16  # Vertical beams (elevation channels) for range image
-        self.LIDAR3D_NUM_BINS = 90   # Horizontal bins (azimuth channels) for range image
+        self.LIDAR3D_MAX_RANGE = float(SENSOR_LIDAR3D_MAX_RANGE_M)  # Maximum detection range in meters
+        self.LIDAR3D_NUM_BEAMS = max(2, int(SENSOR_LIDAR3D_VERTICAL_NUM_RAYS))  # Vertical beams (elevation channels)
         self.LIDAR3D_HORIZONTAL_FOV = 360.0  # Horizontal field of view in degrees (full circle)
         self.LIDAR3D_VERTICAL_FOV = 90.0  # Vertical field of view in degrees (hemisphere upward: 0 to +90)
-        # Computed resolutions based on fixed beam/bin configuration
+        # Derive horizontal bin count from target angular precision.
+        self.LIDAR3D_NUM_BINS = max(
+            1,
+            int(np.round(self.LIDAR3D_HORIZONTAL_FOV / float(SENSOR_LIDAR3D_HORIZONTAL_ANGULAR_RES_DEG))),
+        )
+        # Direct-resolution casting: output bins are cast directly (no pooling).
+        self.LIDAR3D_OVERSAMPLE_V = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_V))
+        self.LIDAR3D_OVERSAMPLE_H = max(1, int(SENSOR_LIDAR3D_OVERSAMPLE_H))
+        # Computed resolutions based on configured beam/bin values.
         self.LIDAR3D_VERTICAL_RES = self.LIDAR3D_VERTICAL_FOV / (self.LIDAR3D_NUM_BEAMS - 1)  # ~6° per beam
-        self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS  # 4° per bin
+        self.LIDAR3D_HORIZONTAL_RES = self.LIDAR3D_HORIZONTAL_FOV / self.LIDAR3D_NUM_BINS
         self.LIDAR3D_SCAN_RATE_HZ = 5.0  # Desired scan rate in Hz (reduced for performance)
         self.LIDAR3D_CAPTURE_FREQ = int(self.CTRL_FREQ/self.LIDAR3D_SCAN_RATE_HZ)  # Update frequency in control steps
         if self.VISION_ATTR:
-            self.IMG_RES = np.array([64, 48])
+            self.IMG_RES = np.array([SENSOR_CAMERA_IMAGE_WIDTH, SENSOR_CAMERA_IMAGE_HEIGHT])
             self.IMG_FRAME_PER_SEC = 24
             self.IMG_CAPTURE_FREQ = int(self.PYB_FREQ/self.IMG_FRAME_PER_SEC)
             self.rgb = np.zeros(((self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0], 4)))
@@ -648,12 +677,10 @@ class BaseAviary(gym.Env):
                                              cameraUpVector=[0, 0, 1],
                                              physicsClientId=self.CLIENT
                                              )
-        # 90° horizontal FOV with correct aspect ratio for 64x48 resolution.
-        # PyBullet expects vertical FOV, so derive it:
-        #   vfov = 2 * atan(tan(hfov/2) / aspect)
-        # With hfov=90° and aspect=64/48=1.333 → vfov ≈ 73.74°
+        # Keep camera model consistent with project assumptions:
+        # 90° horizontal FOV on the actual image aspect ratio.
         cam_aspect = self.IMG_RES[0] / self.IMG_RES[1]  # width / height
-        hfov_rad = np.deg2rad(90.0)
+        hfov_rad = np.deg2rad(float(SENSOR_CAMERA_HFOV))
         vfov_deg = float(np.rad2deg(2.0 * np.arctan(np.tan(hfov_rad / 2.0) / cam_aspect)))
         DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=vfov_deg,
                                                       aspect=cam_aspect,
@@ -2135,6 +2162,91 @@ class BaseAviary(gym.Env):
         # Restore solid walls (no cutouts).
         self._removeOuterWalls()
         self._addOuterWalls()
+
+    def _addDistractorObstacles(self, distractor_obstacles: list):
+        """Add static distractor obstacles (spheres and boxes).
+
+        Distractors keep collision shapes so LiDAR raycasts can hit them, but
+        collisions with drone bodies are disabled to prevent crash contacts.
+        """
+        if not hasattr(self, 'DISTRACTOR_IDS'):
+            self.DISTRACTOR_IDS = []
+
+        for obstacle in distractor_obstacles:
+            shape = obstacle.get('shape')
+            position = obstacle.get('position', [0.0, 0.0, 1.0])
+            size = obstacle.get('size', [0.2, 0.2, 0.2])
+
+            if shape == 'sphere':
+                radius = float(size[0])
+                collision_id = p.createCollisionShape(
+                    p.GEOM_SPHERE,
+                    radius=radius,
+                    physicsClientId=self.CLIENT
+                )
+                visual_id = p.createVisualShape(
+                    p.GEOM_SPHERE,
+                    radius=radius,
+                    rgbaColor=[0.65, 0.25, 0.85, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+            elif shape == 'box':
+                half_extents = [float(size[0]), float(size[1]), float(size[2])]
+                collision_id = p.createCollisionShape(
+                    p.GEOM_BOX,
+                    halfExtents=half_extents,
+                    physicsClientId=self.CLIENT
+                )
+                visual_id = p.createVisualShape(
+                    p.GEOM_BOX,
+                    halfExtents=half_extents,
+                    rgbaColor=[0.20, 0.75, 0.55, 1.0],
+                    physicsClientId=self.CLIENT
+                )
+            else:
+                continue
+
+            body_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=collision_id,
+                baseVisualShapeIndex=visual_id,
+                basePosition=[float(position[0]), float(position[1]), float(position[2])],
+                physicsClientId=self.CLIENT
+            )
+
+            # Keep distractors visible to LiDAR (collision shape exists) while
+            # making them non-collidable for the drone.
+            if hasattr(self, 'DRONE_IDS'):
+                for drone_id in self.DRONE_IDS:
+                    p.setCollisionFilterPair(
+                        bodyUniqueIdA=body_id,
+                        bodyUniqueIdB=int(drone_id),
+                        linkIndexA=-1,
+                        linkIndexB=-1,
+                        enableCollision=0,
+                        physicsClientId=self.CLIENT
+                    )
+                    num_links = p.getNumJoints(int(drone_id), physicsClientId=self.CLIENT)
+                    for link_idx in range(num_links):
+                        p.setCollisionFilterPair(
+                            bodyUniqueIdA=body_id,
+                            bodyUniqueIdB=int(drone_id),
+                            linkIndexA=-1,
+                            linkIndexB=link_idx,
+                            enableCollision=0,
+                            physicsClientId=self.CLIENT
+                        )
+            self.DISTRACTOR_IDS.append(body_id)
+
+        for _ in range(5):
+            p.stepSimulation(physicsClientId=self.CLIENT)
+
+    def _removeDistractorObstacles(self):
+        """Remove all distractor obstacles from the simulation."""
+        if hasattr(self, 'DISTRACTOR_IDS'):
+            for obstacle_id in self.DISTRACTOR_IDS:
+                p.removeBody(obstacle_id, physicsClientId=self.CLIENT)
+            self.DISTRACTOR_IDS = []
 
     ################################################################################
     
