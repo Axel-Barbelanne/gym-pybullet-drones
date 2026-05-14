@@ -8,7 +8,7 @@ from gymnasium import spaces
 from gym_pybullet_drones.envs.BaseAviary import BaseAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 
-# Whiteboard dimension ranges (kept identical to collect_realistic_latent.py RANGES).
+# Whiteboard dimension ranges (aligned with constants.sim_profiles.hw_demo).
 _WB_WIDTH_RANGE = (1.70, 2.00)
 _WB_HEIGHT_RANGE = (1.10, 1.30)
 _WB_BOTTOM_Z_RANGE = (0.70, 0.90)
@@ -86,9 +86,7 @@ class HwDemoAviary(BaseAviary):
         # Keep LiDAR behaviour identical to the main simulation except mount pitch.
         self.LIDAR3D_MOUNT_PITCH_DEG = 9.5
 
-    # ------------------------------------------------------------------
     # Spatial helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _sample_xy_in_square(
@@ -108,9 +106,7 @@ class HwDemoAviary(BaseAviary):
         theta = float(rng.uniform(0.0, 2.0 * np.pi))
         return [r * float(np.cos(theta)), r * float(np.sin(theta))]
 
-    # ------------------------------------------------------------------
     # Scene configuration
-    # ------------------------------------------------------------------
 
     @staticmethod
     def sample_random_scene_configuration(
@@ -206,9 +202,7 @@ class HwDemoAviary(BaseAviary):
             else:
                 raise KeyError(f"Unknown scene config key: {key!r}")
 
-    # ------------------------------------------------------------------
     # Gym / BaseAviary boilerplate
-    # ------------------------------------------------------------------
 
     def _actionSpace(self):
         act_lower = np.array([[0.0, 0.0, 0.0, 0.0] for _ in range(self.NUM_DRONES)])
@@ -257,9 +251,7 @@ class HwDemoAviary(BaseAviary):
     def _computeInfo(self):
         return {"answer": 42}
 
-    # ------------------------------------------------------------------
     # Scene construction
-    # ------------------------------------------------------------------
 
     def _housekeeping(self):
         """Initialise simulation and build the scene."""
@@ -443,9 +435,7 @@ class HwDemoAviary(BaseAviary):
             )
             self.WHITEBOARD_POLE_IDS.append(int(pole_id))
 
-    # ------------------------------------------------------------------
     # LiDAR sensor
-    # ------------------------------------------------------------------
 
     def _getDroneLidarScan3D(
         self,
